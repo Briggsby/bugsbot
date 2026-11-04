@@ -1,9 +1,10 @@
 """Authentication for the web UI and API.
 
-- One admin password (scrypt-hashed) unlocks a signed, HttpOnly session cookie.
+- GitHub OAuth (see oauth.py) is the only interactive sign-in. It yields a signed,
+  HttpOnly session cookie.
 - An optional API token (stored hashed) allows `Authorization: Bearer <token>` access.
-- A single-use, short-lived login link is minted at startup so the auto-opened
-  browser tab is signed in without typing the password.
+- Single-use, short-lived sign-in links, printed to the server's terminal, let the
+  operator in before OAuth is configured or if it ever breaks.
 """
 
 from __future__ import annotations
@@ -12,30 +13,13 @@ import hashlib
 import hmac
 import secrets
 import time
-from collections import defaultdict
 
 from .store import Store
 
 COOKIE = "bugsbot_session"
-SESSION_TTL = 14 * 24 * 3600
+SESSION_TTL = 24 * 3600
 LOGIN_LINK_TTL = 600
-MAX_FAILURES = 5
-FAILURE_WINDOW = 300
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
-    return f"scrypt${salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    try:
-        _, salt_hex, digest_hex = stored.split("$")
-    except ValueError:
-        return False
-    digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1)
-    return hmac.compare_digest(digest.hex(), digest_hex)
+LINK_USER = "operator"  # session identity for terminal sign-in links
 
 
 def _sha256(value: str) -> str:
@@ -45,45 +29,8 @@ def _sha256(value: str) -> str:
 class Auth:
     def __init__(self, store: Store):
         self.store = store
-        self._failures: dict[str, list[float]] = defaultdict(list)
-        self._login_links: dict[str, float] = {}
         if not store.get_setting("session_secret"):
             store.update_settings({"session_secret": secrets.token_hex(32)})
-
-    # -- password --------------------------------------------------------------
-
-    @property
-    def has_password(self) -> bool:
-        return bool(self.store.get_setting("admin_password_hash"))
-
-    def set_password(self, password: str) -> None:
-        if len(password) < 10:
-            raise ValueError("password must be at least 10 characters")
-        # Rotating the secret signs out every existing session.
-        self.store.update_settings({"admin_password_hash": hash_password(password),
-                                    "session_secret": secrets.token_hex(32)})
-
-    def ensure_password(self) -> str | None:
-        """On first run, generate a password and return it so the CLI can print it once."""
-        if self.has_password:
-            return None
-        password = secrets.token_urlsafe(15)
-        self.set_password(password)
-        return password
-
-    def rate_limited(self, client: str) -> bool:
-        now = time.time()
-        self._failures[client] = [t for t in self._failures[client] if now - t < FAILURE_WINDOW]
-        return len(self._failures[client]) >= MAX_FAILURES
-
-    def check_password(self, client: str, password: str) -> bool:
-        if self.rate_limited(client) or not self.has_password:
-            return False
-        if verify_password(password, self.store.get_setting("admin_password_hash")):
-            self._failures.pop(client, None)
-            return True
-        self._failures[client].append(time.time())
-        return False
 
     # -- sessions --------------------------------------------------------------
 
@@ -91,8 +38,8 @@ class Auth:
         key = self.store.get_setting("session_secret").encode()
         return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
 
-    def new_session(self, user: str = "admin", ttl: int = SESSION_TTL) -> str:
-        """`user` is 'admin' for password sign-in or 'gh:<login>' for GitHub sign-in."""
+    def new_session(self, user: str, ttl: int = SESSION_TTL) -> str:
+        """`user` is 'gh:<login>' for GitHub sign-in or LINK_USER for a terminal sign-in link."""
         payload = f"{int(time.time()) + ttl}.{secrets.token_hex(8)}.{user}"
         return f"{payload}.{self._sign(payload)}"
 
@@ -127,13 +74,12 @@ class Auth:
             return False
         return hmac.compare_digest(_sha256(header[7:].strip()), stored)
 
-    # -- one-time login links ----------------------------------------------------
+    # -- single-use sign-in links -------------------------------------------------
 
     def mint_login_link(self) -> str:
         token = secrets.token_urlsafe(24)
-        self._login_links[token] = time.time() + LOGIN_LINK_TTL
+        self.store.add_login_link(_sha256(token), time.time() + LOGIN_LINK_TTL)
         return token
 
     def redeem_login_link(self, token: str) -> bool:
-        expiry = self._login_links.pop(token, 0)
-        return expiry > time.time()
+        return bool(token) and self.store.consume_login_link(_sha256(token))

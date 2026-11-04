@@ -34,9 +34,8 @@ def fake_github(login: str, orgs: dict[str, str] | None = None):
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     app = create_app(tmp_path, public_url="https://bugsbot.example.com")
-    app.state.auth.set_password("supersecret1")
     c = TestClient(app)
-    c.post("/api/login", json={"password": "supersecret1"}, headers=H)
+    c.get(f"/auth/link?t={app.state.auth.mint_login_link()}")
     c.put("/api/settings", json={"github_oauth_client_id": "cid", "github_oauth_client_secret": "s3cret",
                                  "oauth_allowed_users": "Alice", "oauth_allowed_orgs": "acme"}, headers=H)
     return app
@@ -56,7 +55,7 @@ def sign_in(app, monkeypatch, transport, code="good-code"):
 
 
 def test_options(app):
-    assert TestClient(app).get("/api/auth/options").json() == {"password": True, "github": True}
+    assert TestClient(app).get("/api/auth/options").json() == {"github": True}
 
 
 def test_allowed_user_signs_in(app, monkeypatch):
@@ -88,14 +87,7 @@ def test_state_mismatch_refused(app):
     assert r.status_code == 403 and c.get("/api/state").status_code == 401
 
 
-def test_password_toggle(tmp_path):
+def test_not_configured(tmp_path):
     app = create_app(tmp_path)
-    app.state.auth.set_password("supersecret1")
-    c = TestClient(app)
-    c.post("/api/login", json={"password": "supersecret1"}, headers=H)
-    # Refuses to lock you out when GitHub sign-in isn't configured.
-    assert c.put("/api/settings", json={"password_login_enabled": False}, headers=H).status_code == 400
-    c.put("/api/settings", json={"github_oauth_client_id": "cid", "github_oauth_client_secret": "x",
-                                 "password_login_enabled": False}, headers=H)
-    assert TestClient(app).post("/api/login", json={"password": "supersecret1"}, headers=H).status_code == 403
-    assert TestClient(app).get("/api/auth/options").json() == {"password": False, "github": True}
+    assert TestClient(app).get("/api/auth/options").json() == {"github": False}
+    assert TestClient(app).get("/auth/github", follow_redirects=False).status_code == 400

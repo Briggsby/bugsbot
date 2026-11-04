@@ -21,7 +21,7 @@ log = logging.getLogger("bugsbot.oauth")
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 STATE_COOKIE = "bugsbot_oauth_state"
-GITHUB_SESSION_TTL = 24 * 3600  # shorter than password sessions so allowlist removals take effect
+GITHUB_SESSION_TTL = 24 * 3600  # short, so allowlist removals take effect within a day
 WRITE_PERMISSIONS = {"admin", "maintain", "write"}
 
 

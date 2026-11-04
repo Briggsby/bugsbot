@@ -26,18 +26,20 @@ Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and git.
 uv run bugsbot            # opens the web UI in your browser, already signed in
 ```
 
-On first launch bugsbot generates an admin password and prints it once, together with a one-time
-sign-in link (valid for 10 minutes) that the browser is opened with. Change the password in
-**Settings → Access** or with `uv run bugsbot set-password`.
+The only interactive sign-in is **GitHub OAuth**. To get in before that's set up, the server prints
+a single-use sign-in link (valid for 10 minutes) and opens your browser with it. Run
+`uv run bugsbot login-link` (with the same `--home`, and `--port`/`--public-url` as the server) to
+mint another one at any time, e.g. if OAuth is misconfigured.
 
 In the UI:
 
-1. **Settings**: add your Anthropic API key. If you leave it blank, Claude Code's own login is used.
+1. **Settings → GitHub sign-in**: register an OAuth App and choose who's allowed in (see below).
+2. **Settings**: add your Anthropic API key. If you leave it blank, Claude Code's own login is used.
    You can also add a GitHub token; if blank, your `gh auth login` session is used. The token needs
    repo contents, issues and pull requests read/write access.
-2. **Repos & labels**: pick repositories (use "Load my repos" to choose from yours) and add one or
+3. **Repos & labels**: pick repositories (use "Load my repos" to choose from yours) and add one or
    more labels, e.g. `bugsbot`.
-3. Label an issue or PR on GitHub. It shows up under **Issues** or **Pull requests** on the next
+4. Label an issue or PR on GitHub. It shows up under **Issues** or **Pull requests** on the next
    poll, and each agent it starts is listed under **Agent runs** with its duration, turns, cost and
    full log.
 
@@ -59,14 +61,13 @@ State (settings, repos, labels, tracked items, run history) lives in `~/.bugsbot
 
 Every page and API endpoint requires authentication:
 
-- **Sign in with GitHub** (recommended). Create an
+- **Sign in with GitHub**. Create an
   [OAuth App](https://github.com/settings/developers) whose callback URL is
   `<public-url>/auth/github/callback`; **Settings → GitHub sign-in** shows the exact URL. Enter the
   client ID and secret there, then allow specific logins, members of organisations, and/or anyone
   with write access to a tracked repo. Nobody is allowed by default. GitHub sessions last 24 hours.
-- Admin password sign-in, scrypt-hashed, with login attempts rate-limited per client. Once GitHub
-  sign-in works you can switch it off. `bugsbot set-password` on the server turns it back on if you
-  lock yourself out.
+- Single-use sign-in links, which only someone with shell access to the server can mint:
+  `bugsbot login-link`. They're stored hashed and expire after 10 minutes.
 - Signed `HttpOnly`, `SameSite=Strict` session cookies, marked `Secure` over HTTPS.
 - Optionally an API token for scripts: `Authorization: Bearer <token>`. Generate it under
   **Settings → Access**; it's stored hashed.

@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS run_events (
     type TEXT NOT NULL,
     text TEXT NOT NULL
 );
+-- Single-use sign-in links minted from the server's terminal (stored hashed).
+CREATE TABLE IF NOT EXISTS login_links (
+    token_hash TEXT PRIMARY KEY,
+    expires_at REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS run_events_run ON run_events(run_id, id);
 CREATE INDEX IF NOT EXISTS runs_item ON runs(item_id, id);
 """
@@ -89,21 +94,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "git_author_name": "bugsbot",
     "git_author_email": "bugsbot@users.noreply.github.com",
     "signature": DEFAULT_SIGNATURE,
-    # Web UI sign-in
-    "password_login_enabled": True,
+    # Web UI sign-in (GitHub OAuth)
     "github_oauth_client_id": "",
     "github_oauth_client_secret": "",
     "oauth_allowed_users": "",          # comma-separated GitHub logins
     "oauth_allowed_orgs": "",           # comma-separated org logins
     "oauth_allow_repo_collaborators": False,  # anyone with write access to a tracked repo
     # Internal: never returned by or settable through the settings API.
-    "admin_password_hash": "",
     "session_secret": "",
     "api_token_hash": "",
 }
 
 SECRET_KEYS = {"anthropic_api_key", "github_token", "github_oauth_client_secret"}
-INTERNAL_KEYS = {"admin_password_hash", "session_secret", "api_token_hash"}
+INTERNAL_KEYS = {"session_secret", "api_token_hash"}
 
 
 def default_home() -> Path:
@@ -138,7 +141,8 @@ class Store:
     def settings(self) -> dict[str, Any]:
         out = dict(DEFAULT_SETTINGS)
         for row in self._q("SELECT key, value FROM settings"):
-            out[row["key"]] = json.loads(row["value"])
+            if row["key"] in DEFAULT_SETTINGS:  # ignore keys from older versions
+                out[row["key"]] = json.loads(row["value"])
         return out
 
     def get_setting(self, key: str) -> Any:
@@ -153,6 +157,18 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, json.dumps(value)),
             )
+
+    # -- login links ------------------------------------------------------------
+
+    def add_login_link(self, token_hash: str, expires_at: float) -> None:
+        self._x("DELETE FROM login_links WHERE expires_at < ?", (time.time(),))
+        self._x("INSERT INTO login_links VALUES (?, ?)", (token_hash, expires_at))
+
+    def consume_login_link(self, token_hash: str) -> bool:
+        with self._lock:
+            rows = self._q("SELECT expires_at FROM login_links WHERE token_hash = ?", (token_hash,))
+            self._x("DELETE FROM login_links WHERE token_hash = ?", (token_hash,))
+        return bool(rows) and rows[0]["expires_at"] > time.time()
 
     # -- repos & labels -------------------------------------------------------
 

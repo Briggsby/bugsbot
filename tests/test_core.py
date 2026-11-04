@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from bugsbot.agent import make_guard
 from bugsbot.app import create_app
-from bugsbot.auth import Auth, hash_password, verify_password
+from bugsbot.auth import LINK_USER, Auth
 from bugsbot.github import MARKER, is_bugsbot, replied_keys, sign
 from bugsbot.store import DEFAULT_SIGNATURE, Store
 from bugsbot.work import issue_work, pr_work
@@ -98,36 +98,36 @@ def test_guard(cmd, blocked):
 
 # -- auth ----------------------------------------------------------------------------
 
-def test_password_hashing():
-    h = hash_password("correct horse")
-    assert verify_password("correct horse", h) and not verify_password("wrong", h)
+def link_client(app):
+    c = TestClient(app)
+    assert c.get(f"/auth/link?t={app.state.auth.mint_login_link()}").status_code == 200
+    return c
 
 
-def test_sessions_and_rate_limit(tmp_path):
+def test_sessions(tmp_path):
     auth = Auth(Store(tmp_path))
-    auth.set_password("supersecret1")
-    cookie = auth.new_session()
-    assert auth.valid_session(cookie) and not auth.valid_session(cookie + "x")
-    auth.set_password("supersecret2")  # rotates secret
+    cookie = auth.new_session("gh:alice")
+    assert auth.session_user(cookie) == "gh:alice"
+    assert not auth.valid_session(cookie + "x") and not auth.valid_session(cookie.replace("alice", "mallory"))
+    assert not auth.valid_session(auth.new_session("gh:alice", ttl=-1))
+    auth.sign_out_everyone()
     assert not auth.valid_session(cookie)
-    for _ in range(5):
-        assert not auth.check_password("1.2.3.4", "nope")
-    assert not auth.check_password("1.2.3.4", "supersecret2")  # locked out
-    assert auth.check_password("5.6.7.8", "supersecret2")
 
 
 def test_api_requires_auth(tmp_path):
     app = create_app(tmp_path)
-    app.state.auth.set_password("supersecret1")
-    c = TestClient(app)
-    assert c.get("/api/state").status_code == 401
-    assert c.get("/", follow_redirects=False).status_code == 303
+    anon = TestClient(app)
+    assert anon.get("/api/state").status_code == 401
+    assert anon.get("/", follow_redirects=False).status_code == 303
+    assert anon.get("/login").status_code == 200
+    assert anon.post("/api/login", json={"password": "x"}, headers={"X-Bugsbot": "1"}).status_code == 401
+
+    c = link_client(app)
     h = {"X-Bugsbot": "1"}
-    assert c.post("/api/login", json={"password": "wrong"}, headers=h).status_code == 401
-    assert c.post("/api/login", json={"password": "supersecret1"}).status_code == 403  # CSRF header missing
-    assert c.post("/api/login", json={"password": "supersecret1"}, headers=h).status_code == 200
+    assert c.post("/api/labels", json={"name": "ai"}).status_code == 403  # CSRF header missing
     state = c.get("/api/state").json()
-    assert "admin_password_hash" not in state["settings"] and "session_secret" not in state["settings"]
+    assert state["viewer"] == LINK_USER
+    assert "session_secret" not in state["settings"] and "api_token_hash" not in state["settings"]
     assert c.put("/api/settings", json={"session_secret": "x"}, headers=h).status_code == 400
     c.put("/api/settings", json={"anthropic_api_key": "sk-test", "poll_interval_seconds": 30}, headers=h)
     s = c.get("/api/state").json()["settings"]
@@ -135,18 +135,23 @@ def test_api_requires_auth(tmp_path):
     assert c.post("/api/labels", json={"name": "ai"}, headers=h).json() == ["ai"]
 
     token = c.post("/api/auth/token", headers=h).json()["token"]
-    anon = TestClient(app)
     assert anon.get("/api/state", headers={"Authorization": f"Bearer {token}"}).status_code == 200
     assert anon.get("/api/state", headers={"Authorization": "Bearer nope"}).status_code == 401
 
 
-def test_login_link_single_use(tmp_path):
+def test_login_link_single_use_and_shared_via_db(tmp_path):
+    # Links minted by a separate process (`bugsbot login-link`) work on the running server.
+    t = Auth(Store(tmp_path)).mint_login_link()
     app = create_app(tmp_path)
-    auth = app.state.auth
-    auth.ensure_password()
-    t = auth.mint_login_link()
     c = TestClient(app)
     r = c.get(f"/auth/link?t={t}", follow_redirects=False)
     assert r.status_code == 200 and 'location.replace("/")' in r.text
-    assert c.get("/api/state").json()["viewer"] == "admin"
+    assert c.get("/api/state").status_code == 200
     assert TestClient(app).get(f"/auth/link?t={t}", follow_redirects=False).headers["location"] == "/login"
+    assert TestClient(app).get("/auth/link?t=", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_legacy_settings_ignored(tmp_path):
+    store = Store(tmp_path)
+    store._x("INSERT INTO settings VALUES ('admin_password_hash', '\"scrypt$x$y\"')")
+    assert "admin_password_hash" not in store.settings()

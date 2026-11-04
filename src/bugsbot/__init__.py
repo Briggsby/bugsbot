@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import logging
 import socket
 import sys
@@ -19,25 +18,23 @@ def _port_free(host: str, port: int) -> bool:
         return s.connect_ex(("127.0.0.1" if host in ("0.0.0.0", "") else host, port)) != 0
 
 
-def _set_password(home: Path) -> None:
+def _base_url(args: argparse.Namespace, port: int) -> str:
+    host = "127.0.0.1" if args.host in ("0.0.0.0", "") else args.host
+    return (args.public_url or f"http://{host}:{port}").rstrip("/")
+
+
+def _login_link(home: Path, base: str) -> str:
     from .auth import Auth
     from .store import Store
 
-    password = getpass.getpass("New bugsbot password (min 10 chars): ")
-    if password != getpass.getpass("Repeat: "):
-        sys.exit("Passwords do not match.")
-    try:
-        store = Store(home)
-        Auth(store).set_password(password)
-        store.update_settings({"password_login_enabled": True})  # break-glass if GitHub sign-in breaks
-    except ValueError as e:
-        sys.exit(str(e))
-    print("Password updated and password sign-in enabled; existing sessions have been signed out.")
+    return f"{base}/auth/link?t={Auth(Store(home)).mint_login_link()}"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="bugsbot", description=__doc__)
-    parser.add_argument("command", nargs="?", choices=["serve", "set-password"], default="serve")
+    parser.add_argument("command", nargs="?", choices=["serve", "login-link"], default="serve",
+                        help="serve (default) runs the harness; login-link prints a single-use sign-in "
+                             "link for an already-running server")
     parser.add_argument("--host", default="127.0.0.1",
                         help="interface to bind (default 127.0.0.1; use 0.0.0.0 to expose publicly)")
     parser.add_argument("--port", type=int, default=8765, help="port for the web UI (default 8765)")
@@ -51,8 +48,8 @@ def main() -> None:
     args = parser.parse_args()
 
     home = (args.home or default_home()).expanduser().resolve()
-    if args.command == "set-password":
-        _set_password(home)
+    if args.command == "login-link":
+        print(_login_link(home, _base_url(args, args.port)))
         return
 
     port = args.port
@@ -66,18 +63,14 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     app = create_app(home, public_url=args.public_url)
-    auth = app.state.auth
-    base = (args.public_url or f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{port}").rstrip("/")
-    generated = auth.ensure_password()
-    link = f"{base}/auth/link?t={auth.mint_login_link()}"
+    base = _base_url(args, port)
+    link = _login_link(home, base)
 
     sys.stdout.reconfigure(line_buffering=True)
     print(f"bugsbot: state in {home}")
     print(f"bugsbot: web UI at {base}/  (listening on {args.host}:{port})")
-    if generated:
-        print(f"bugsbot: generated admin password: {generated}")
-        print("bugsbot:   (shown once — change it in Settings or with `bugsbot set-password`)")
-    print(f"bugsbot: one-time sign-in link (valid 10 minutes): {link}")
+    print(f"bugsbot: single-use sign-in link (valid 10 minutes): {link}")
+    print("bugsbot:   configure GitHub sign-in under Settings; `bugsbot login-link` mints another link")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(link,)).start()
     uvicorn.run(app, host=args.host, port=port, log_level="warning",

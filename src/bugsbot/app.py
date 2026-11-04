@@ -14,14 +14,14 @@ import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from .auth import COOKIE, SESSION_TTL, Auth
+from .auth import COOKIE, LINK_USER, SESSION_TTL, Auth
 from .chat import ChatManager
 from .github import GitHubError
 from .harness import Harness
 from .oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
 from .store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
 
-PUBLIC_PATHS = {"/login", "/api/login", "/auth/link", "/api/auth/options", "/auth/github", "/auth/github/callback"}
+PUBLIC_PATHS = {"/login", "/auth/link", "/api/auth/options", "/auth/github", "/auth/github/callback"}
 
 # Navigating to "/" from a page we served makes the next request same-site, so the
 # SameSite=Strict session cookie is sent even when sign-in started on github.com.
@@ -76,8 +76,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
     def is_secure(request: Request) -> bool:
         return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
 
-    def set_session(request: Request, response: Response, user: str = "admin",
-                    ttl: int = SESSION_TTL) -> None:
+    def set_session(request: Request, response: Response, user: str, ttl: int = SESSION_TTL) -> None:
         response.set_cookie(COOKIE, auth.new_session(user, ttl), max_age=ttl, httponly=True,
                             secure=is_secure(request), samesite="strict")
 
@@ -93,8 +92,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     @app.get("/api/auth/options")
     async def auth_options() -> dict[str, bool]:
-        return {"password": bool(store.get_setting("password_login_enabled")) and auth.has_password,
-                "github": oauth.configured}
+        return {"github": oauth.configured}
 
     @app.get("/auth/github")
     async def github_login(request: Request) -> Response:
@@ -126,21 +124,9 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     @app.post("/api/auth/signout-all")
     async def signout_all(request: Request, response: Response) -> dict[str, bool]:
-        user = auth.session_user(request.cookies.get(COOKIE)) or "admin"
+        user = auth.session_user(request.cookies.get(COOKIE)) or LINK_USER
         auth.sign_out_everyone()
         set_session(request, response, user=user)  # keep the caller signed in
-        return {"ok": True}
-
-    @app.post("/api/login")
-    async def login(request: Request, response: Response, password: str = Body(..., embed=True)) -> dict[str, bool]:
-        if not store.get_setting("password_login_enabled"):
-            raise HTTPException(403, "password sign-in is disabled; use GitHub")
-        client = request.client.host if request.client else "?"
-        if auth.rate_limited(client):
-            raise HTTPException(429, "too many failed attempts; try again in a few minutes")
-        if not auth.check_password(client, password):
-            raise HTTPException(401, "wrong password")
-        set_session(request, response)
         return {"ok": True}
 
     @app.get("/auth/link")
@@ -148,25 +134,12 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
         if not auth.redeem_login_link(t):
             return RedirectResponse("/login", status_code=303)
         response = HTMLResponse(BOUNCE)
-        set_session(request, response)
+        set_session(request, response, user=LINK_USER)
         return response
 
     @app.post("/api/logout")
     async def logout(response: Response) -> dict[str, bool]:
         response.delete_cookie(COOKIE)
-        return {"ok": True}
-
-    @app.post("/api/auth/password")
-    async def change_password(request: Request, response: Response, current: str = Body(...),
-                              new: str = Body(...)) -> dict[str, bool]:
-        client = request.client.host if request.client else "?"
-        if not auth.check_password(client, current):
-            raise HTTPException(401, "current password is wrong")
-        try:
-            auth.set_password(new)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        set_session(request, response)  # old sessions are invalidated; keep this one signed in
         return {"ok": True}
 
     @app.post("/api/auth/token")
@@ -220,10 +193,6 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
                 clean[key] = type(default)(value) if not isinstance(default, bool) else bool(value)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"invalid value for {key}")
-        merged = {**store.settings(), **clean}
-        if not merged["password_login_enabled"] and not (
-                merged["github_oauth_client_id"] and merged["github_oauth_client_secret"]):
-            raise HTTPException(400, "configure GitHub sign-in before disabling password sign-in")
         store.update_settings(clean)
         if "github_token" in clean:
             harness.status["github_user"] = None
