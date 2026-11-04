@@ -1,2 +1,2 @@
 # bugsbot
-AI Agent Harness for Github PR scanning
+AI Agent Harness for Github PR creation and editing
