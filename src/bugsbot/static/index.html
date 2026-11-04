@@ -124,6 +124,9 @@
       <div class="row" style="margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:6px">
         <span>Claude account on this host:</span> <b id="claude-account" class="cred-status none" style="margin:0">checking…</b>
         <button class="btn small" onclick="checkClaudeAccount()">Re-check</button>
+        <span style="flex-basis:100%"></span>
+        <span>Workers folder trusted by Claude Code:</span> <b id="claude-trust" class="cred-status none" style="margin:0">checking…</b>
+        <code id="claude-trust-cmd" class="small" style="display:none; flex-basis:100%; padding:6px 8px; background:var(--code); border-radius:6px"></code>
       </div>
       <ul class="small muted" style="margin:0 0 12px; padding-left:18px">
         <li>It appears in the Claude account that's logged in to Claude Code <b>on the bugsbot host</b>, and only that account can open it.
@@ -425,7 +428,12 @@ async function checkClaudeAccount() {
   const who = [a.email, a.orgName && `(${a.orgName}${a.subscriptionType ? ", " + a.subscriptionType : ""})`].filter(Boolean).join(" ");
   el.className = "cred-status " + (a.ok ? "ok" : "bad");
   el.textContent = a.ok ? `✓ ${who}` : `✗ ${a.detail}${who ? " — " + who : ""}. Run \`claude\` then /login as the OS user running bugsbot.`;
-  $("start-worker").disabled = !a.ok;
+  const t = a.trust, tel = $("claude-trust");
+  tel.className = "cred-status " + (t.trusted ? "ok" : "bad");
+  tel.textContent = t.trusted ? `✓ ${t.root}` : `✗ not yet. Once, on the bugsbot host, as the OS user running it, run this, accept the trust prompt, then /exit:`;
+  $("claude-trust-cmd").style.display = t.trusted ? "none" : "";
+  $("claude-trust-cmd").textContent = t.command;
+  $("start-worker").disabled = !(a.ok && t.trusted);
 }
 async function stopWorker() {
   if (!openRunId || !confirm("Stop this remote worker? Its Claude app session will disconnect.")) return;

@@ -58,10 +58,11 @@ def agent_env(home: Path, author_name: str, author_email: str) -> dict[str, str]
 
 
 class Workspace:
-    def __init__(self, home: Path, repo: str, kind: str, number: int, token: str):
+    def __init__(self, home: Path, repo: str, kind: str, number: int, token: str,
+                 root: Path | None = None):
         self.repo = repo
         self.token = token
-        self.path = home / "workspaces" / repo.replace("/", "__") / f"{kind}-{number}"
+        self.path = (root or home / "workspaces") / repo.replace("/", "__") / f"{kind}-{number}"
 
     @classmethod
     def at(cls, path: Path, repo: str, token: str) -> "Workspace":

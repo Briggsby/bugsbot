@@ -23,6 +23,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import struct
@@ -40,7 +41,8 @@ from bugsbot.workspace import Workspace, agent_env, git
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]")
 LINK_RE = re.compile(r"https://claude\.ai/code/[A-Za-z0-9_/?=&.-]+")
-TRUST_RE = re.compile(r"trust.{0,40}(folder|files|directory)", re.I | re.S)
+TRUST_RE = re.compile(r"trust", re.I)
+TRUST_CONTEXT_RE = re.compile(r"folder|files|directory|project", re.I)
 MAX_LOG_LINES = 400
 STARTUP_TIMEOUT = 180  # seconds for a worker's session to connect
 
@@ -67,6 +69,36 @@ def find_session_link(cwd: Path, since: float) -> str | None:
                 and data.get("startedAt", 0) / 1000 >= since - 5):
             return f"https://claude.ai/code/{data['bridgeSessionId']}"
     return None
+
+
+def workers_root(home: Path) -> Path:
+    """Every worker checkout lives under this one folder, so trusting it once (in Claude Code)
+    covers all future workers."""
+    return home / "workers"
+
+
+def claude_config_file() -> Path:
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / ".claude.json" if config_dir else Path.home() / ".claude.json"
+
+
+def trust_status(home: Path) -> dict[str, object]:
+    """Whether Claude Code has trusted the workers folder (or a parent of it).
+
+    Read-only: bugsbot never edits Claude Code's config. Trust is granted by running
+    `claude` in the folder once and accepting the prompt.
+    """
+    root = workers_root(home)
+    root.mkdir(parents=True, exist_ok=True)
+    command = f"cd {shlex.quote(str(root))} && claude"
+    try:
+        projects = json.loads(claude_config_file().read_text()).get("projects", {})
+    except (OSError, ValueError):
+        projects = {}
+    for folder in (root, *root.parents):
+        if projects.get(str(folder), {}).get("hasTrustDialogAccepted"):
+            return {"trusted": True, "root": str(root), "trusted_via": str(folder), "command": command}
+    return {"trusted": False, "root": str(root), "command": command}
 
 
 def worker_env(store: Store, home: Path) -> dict[str, str]:
@@ -111,8 +143,9 @@ class RemoteWorker:
         self.link: str | None = None
         self.proc: asyncio.subprocess.Process | None = None
         self._seen: set[str] = set()
-        self._trust_answered = False
+        self._startup_text = ""
         self._login_warned = False
+        self.untrusted = False
         self._stop_reason = "stopped from bugsbot"
         self.task = asyncio.create_task(self._main())
 
@@ -126,7 +159,7 @@ class RemoteWorker:
     async def _prepare_cwd(self) -> Path:
         settings = self.store.settings()
         if not self.repo:
-            cwd = self.home / "workers" / f"worker-{self.run_id}"
+            cwd = workers_root(self.home) / "scratch" / f"worker-{self.run_id}"
             cwd.mkdir(parents=True, exist_ok=True)
             if not (cwd / ".git").exists():
                 await git(cwd, "init", "-q")
@@ -136,7 +169,7 @@ class RemoteWorker:
             default_branch = (await gh.repo(self.repo))["default_branch"]
             if self.branch in (default_branch, "main", "master"):
                 raise ValueError(f"'{self.branch}' is protected; name a feature branch or leave it blank")
-            ws = Workspace(self.home, self.repo, "worker", self.run_id, gh.token)
+            ws = Workspace(self.home, self.repo, "worker", self.run_id, gh.token, root=workers_root(self.home))
             # A named branch is checked out if it exists on GitHub, otherwise created from the
             # default branch. With no name the worker starts on the default branch and creates
             # its own branch once it knows what the task is (see branch_rules).
@@ -162,11 +195,17 @@ class RemoteWorker:
         if self.link:
             return  # connected: the session belongs to the Claude app now; output is drained, not kept
         text = ANSI_RE.sub("", data.decode(errors="replace"))
-        if not self._trust_answered and TRUST_RE.search(text):
-            # Only ever our own freshly prepared checkout; accept the default "trust" option.
-            self._trust_answered = True
-            os.write(master, b"\r")
-            self.log("info", "Accepted the folder trust prompt for this worker's checkout")
+        # Prompts can arrive split across reads, so look at all start-up text so far.
+        self._startup_text = (self._startup_text + text)[-4000:]
+        if (not self.untrusted and TRUST_RE.search(self._startup_text)
+                and TRUST_CONTEXT_RE.search(self._startup_text)):
+            # bugsbot never answers security prompts itself; fail with instructions instead.
+            self.untrusted = True
+            status = trust_status(self.home)
+            self.log("error", "Claude Code is asking whether to trust this worker's folder, so the worker "
+                              f"can't start unattended. Trust the workers folder once: on this host run "
+                              f"`{status['command']}`, accept the prompt, then /exit. Workers under "
+                              f"{status['root']} are then trusted.")
         if not self.link and (m := LINK_RE.search(text)):
             self._set_link(m.group(0))
         if not self._login_warned and needs_login(text):
@@ -225,6 +264,8 @@ class RemoteWorker:
             while self.proc.returncode is None:
                 if not self.link and (link := find_session_link(cwd, started)):
                     self._set_link(link)
+                if self.untrusted:
+                    raise RuntimeError("the worker's folder isn't trusted by Claude Code (see above)")
                 if not self.link and time.time() - started > STARTUP_TIMEOUT:
                     raise TimeoutError(f"the session didn't connect within {STARTUP_TIMEOUT}s "
                                        "(see the terminal output above)")

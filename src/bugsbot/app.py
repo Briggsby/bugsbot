@@ -19,7 +19,7 @@ from bugsbot.anthropic_check import check_api_key
 from bugsbot.auth import COOKIE, LINK_USER, SESSION_TTL, Auth
 from bugsbot.github import GitHub, GitHubError, resolve_token
 from bugsbot.harness import Harness
-from bugsbot.remote import WorkerManager, claude_account
+from bugsbot.remote import WorkerManager, claude_account, trust_status
 from bugsbot.oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
 from bugsbot.store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
 
@@ -353,7 +353,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     @app.get("/api/workers/account")
     async def worker_account() -> dict[str, Any]:
-        return await claude_account(store, home)
+        return {**await claude_account(store, home), "trust": trust_status(home)}
 
     @app.post("/api/workers")
     async def open_worker(repo: str = Body(""), branch: str = Body(""), name: str = Body("")) -> dict[str, int]:
@@ -369,6 +369,10 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
         if not account["ok"]:
             raise HTTPException(400, f"Can't start a remote worker: Claude Code on this host is {account['detail']}. "
                                      "As the OS user running bugsbot, run `claude`, then /login with your Claude account.")
+        trust = trust_status(home)
+        if not trust["trusted"]:
+            raise HTTPException(400, "Can't start a remote worker: Claude Code hasn't trusted the workers folder. "
+                                     f"On this host run `{trust['command']}`, accept the prompt, then /exit.")
         return {"run_id": workers.open(repo, branch, name)}
 
     @app.post("/api/workers/{run_id}/stop")
