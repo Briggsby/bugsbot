@@ -138,7 +138,8 @@ class RemoteWorker:
         if not self._login_warned and needs_login(text):
             self._login_warned = True
             self.log("error", "Claude Code on this host isn't logged in. Remote Control needs a Claude "
-                              "subscription login (an API key won't work): run `claude` on the host, then /login.")
+                              "subscription login (an API key won't work): as the OS user running bugsbot, "
+                              "run `claude`, then /login with your Claude account.")
         for line in re.split(r"[\r\n]+", text):
             line = line.strip()
             if line and line not in self._seen and len(self._seen) < MAX_LOG_LINES:

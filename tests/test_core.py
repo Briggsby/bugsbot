@@ -180,6 +180,7 @@ def test_check_api_key_format():
     assert "sk-ant-" in asyncio.run(check_api_key("abc123", "claude-opus-5-5"))
     assert needs_login("Invalid API key · Please run /login")
     assert needs_login("Not logged in · Please run /login") and not needs_login("all good")
+    assert needs_login("Error: You must be logged in to use Remote Control")
 
 
 def test_credentials_check_and_save(tmp_path, monkeypatch):

@@ -36,4 +36,4 @@ LOGIN_HINT = (
 
 def needs_login(text: str) -> bool:
     lowered = text.lower()
-    return "/login" in lowered or "invalid api key" in lowered or "not logged in" in lowered
+    return any(p in lowered for p in ("/login", "invalid api key", "not logged in", "must be logged in"))
