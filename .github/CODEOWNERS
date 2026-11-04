@@ -1,0 +1,6 @@
+# Default owner for everything
+*                     @Briggsby
+
+# Deploy and CI changes need your review specifically
+/.github/             @Briggsby
+/deploy/              @Briggsby
