@@ -180,3 +180,41 @@ def test_check_api_key_format():
     assert "sk-ant-" in asyncio.run(check_api_key("abc123", "claude-opus-5-5"))
     assert needs_login("Invalid API key · Please run /login")
     assert needs_login("Not logged in · Please run /login") and not needs_login("all good")
+
+
+def test_credentials_check_and_save(tmp_path, monkeypatch):
+    async def key_check(key, model):
+        return None if key == "sk-ant-good" else "Anthropic rejected this API key"
+
+    class FakeGH:
+        def __init__(self, token):
+            self.token = token
+        async def viewer(self):
+            if self.token != "ghp_good":
+                from bugsbot.github import GitHubError
+                raise GitHubError("401 Bad credentials")
+            return {"login": "octocat"}
+        async def close(self):
+            pass
+
+    monkeypatch.setattr("bugsbot.app.check_api_key", key_check)
+    monkeypatch.setattr("bugsbot.app.GitHub", FakeGH)
+    monkeypatch.setattr("bugsbot.app.resolve_token", lambda configured: configured or "")
+    app = create_app(tmp_path)
+    c = link_client(app)
+    h = {"X-Bugsbot": "1"}
+
+    status = c.get("/api/credentials").json()
+    assert status["anthropic_api_key"]["ok"] is None and status["github_token"]["ok"] is False
+
+    r = c.post("/api/credentials", json={"anthropic_api_key": " sk-ant-good ", "github_token": "ghp_bad"}, headers=h).json()
+    assert r["anthropic_api_key"] == {"ok": True, "detail": "works with claude-opus-5-5", "saved": True}
+    assert r["github_token"]["ok"] is False and r["github_token"]["saved"] is False
+    assert r["github_token"]["detail"].startswith("not saved:")
+    s = c.get("/api/state").json()["settings"]
+    assert s["has_anthropic_api_key"] and not s["has_github_token"]
+
+    r = c.post("/api/credentials", json={"github_token": "ghp_good"}, headers=h).json()
+    assert r["github_token"]["ok"] and "@octocat" in r["github_token"]["detail"]
+    assert r["anthropic_api_key"]["ok"] is True and "saved" not in r["anthropic_api_key"]  # re-checked, untouched
+    assert c.get("/api/credentials").json()["github_token"]["ok"] is True

@@ -66,6 +66,8 @@
   .form { display: grid; grid-template-columns: 220px 1fr; gap: 10px 16px; align-items: center; }
   .form label { color: var(--muted); }
   @media (max-width: 640px) { .form { grid-template-columns: 1fr; } }
+  .cred-status { font-size: 13px; margin-top: 4px; min-height: 1.3em; }
+  .cred-status.ok { color: var(--ok); } .cred-status.bad { color: var(--bad); } .cred-status.none { color: var(--muted); }
   .errors { color: var(--bad); white-space: pre-wrap; font-size: 13px; }
   #log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code);
          border: 1px solid var(--border); border-radius: 6px; padding: 10px; max-height: 65vh; overflow: auto; }
@@ -163,11 +165,17 @@
       <h2>Credentials</h2>
       <div class="form">
         <label for="anthropic_api_key">Anthropic API key</label>
-        <div class="row"><input type="password" id="anthropic_api_key" autocomplete="off">
+        <div><div class="row"><input type="password" id="anthropic_api_key" autocomplete="off">
           <button class="btn danger" onclick="clearSecret('anthropic_api_key')">Clear</button></div>
+          <div class="cred-status" id="anthropic_api_key-status"></div></div>
         <label for="github_token">GitHub token</label>
-        <div class="row"><input type="password" id="github_token" autocomplete="off">
+        <div><div class="row"><input type="password" id="github_token" autocomplete="off">
           <button class="btn danger" onclick="clearSecret('github_token')">Clear</button></div>
+          <div class="cred-status" id="github_token-status"></div></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="save-creds" onclick="saveCredentials()">Save credentials</button>
+        <button class="btn" onclick="checkCredentials()">Re-check</button>
       </div>
       <p class="muted small">Leave a field blank to keep the stored value. If no GitHub token is set, the <code>gh</code> CLI login is used.
         If no Anthropic key is set, Claude Code's own login is used. Stored locally in <code id="home"></code> (mode 600).</p>
@@ -240,7 +248,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 const FIELDS = ["model","effort","poll_interval_seconds","max_concurrent_agents","max_turns_per_run",
                 "max_budget_usd_per_run","trusted_commenters_only","git_author_name","git_author_email","signature",
                 "github_oauth_client_id","oauth_allowed_users","oauth_allowed_orgs","oauth_allow_repo_collaborators"];
-const SECRETS = ["anthropic_api_key", "github_token", "github_oauth_client_secret"];
+const SECRETS = ["github_oauth_client_secret"];  // credentials have their own save flow
+const CREDS = ["anthropic_api_key", "github_token"];
 let state = null, openRunId = null, lastEventId = 0, settingsLoaded = false;
 
 async function api(method, path, body) {
@@ -265,6 +274,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
   document.querySelectorAll("main section").forEach(s => s.classList.toggle("active", s.id === b.dataset.tab));
   try { localStorage.setItem("bugsbot-tab", b.dataset.tab); } catch {}
+  if (b.dataset.tab === "settings") checkCredentials().catch(() => {});
   refresh();
 });
 try { const t = localStorage.getItem("bugsbot-tab"); if (t) document.querySelector(`[data-tab="${t}"]`)?.click(); } catch {}
@@ -430,7 +440,34 @@ async function addLabel() { const v = $("label-input").value.trim(); if (!v) ret
   await api("POST", "/api/labels", { name: v }); $("label-input").value = ""; refresh(); }
 async function removeLabel(l) { await api("DELETE", `/api/labels/${encodeURIComponent(l)}`); refresh(); }
 async function retryItem(id) { await api("POST", `/api/items/${id}/retry`); toast("Queued for a fresh run"); refresh(); }
-async function clearSecret(k) { await api("DELETE", `/api/secrets/${k}`); toast("Cleared"); refresh(); }
+async function clearSecret(k) {
+  await api("DELETE", `/api/secrets/${k}`); toast("Cleared"); await refresh();
+  if (CREDS.includes(k)) checkCredentials();
+}
+function showCredStatus(results) {
+  for (const k of CREDS) {
+    const r = results[k], el = $(`${k}-status`); if (!r) continue;
+    el.className = "cred-status " + (r.ok === true ? "ok" : r.ok === false ? "bad" : "none");
+    el.textContent = (r.ok === true ? "✓ " : r.ok === false ? "✗ " : "") + r.detail;
+  }
+}
+async function checkCredentials() {
+  for (const k of CREDS) { $(`${k}-status`).className = "cred-status none"; $(`${k}-status`).textContent = "checking…"; }
+  showCredStatus(await api("GET", "/api/credentials"));
+}
+async function saveCredentials() {
+  const body = {}; for (const k of CREDS) body[k] = $(k).value;
+  const btn = $("save-creds"); btn.disabled = true; btn.textContent = "Checking…";
+  try {
+    const results = await api("POST", "/api/credentials", body);
+    for (const k of CREDS) if (results[k].saved) $(k).value = "";
+    showCredStatus(results);
+    const failed = CREDS.filter(k => results[k].saved === false);
+    toast(failed.length ? "Some credentials didn't work; see below" : "Credentials checked");
+    refresh();
+  } finally { btn.disabled = false; btn.textContent = "Save credentials"; }
+}
+for (const k of CREDS) $(k).addEventListener("keydown", e => { if (e.key === "Enter") saveCredentials(); });
 async function saveSettings() {
   const body = {};
   for (const f of FIELDS) { const el = $(f); body[f] = el.type === "checkbox" ? el.checked : (el.type === "number" ? Number(el.value) : el.value); }

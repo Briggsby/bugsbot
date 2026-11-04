@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from bugsbot.anthropic_check import check_api_key
 from bugsbot.auth import COOKIE, LINK_USER, SESSION_TTL, Auth
-from bugsbot.github import GitHubError
+from bugsbot.github import GitHub, GitHubError, resolve_token
 from bugsbot.harness import Harness
 from bugsbot.remote import WorkerManager
 from bugsbot.oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
@@ -207,6 +207,54 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
             harness.status["github_user"] = None
         harness.poll_now()
         return public_settings()
+
+    # -- credentials -----------------------------------------------------------
+
+    async def check_anthropic(key: str) -> dict[str, Any]:
+        if not key:
+            return {"ok": None, "detail": "not set: Claude Code's own login on this host will be used"}
+        problem = await check_api_key(key, store.get_setting("model"))
+        return {"ok": problem is None, "detail": problem or f"works with {store.get_setting('model')}"}
+
+    async def check_github(configured: str) -> dict[str, Any]:
+        token = resolve_token(configured)
+        source = "token" if configured else "gh CLI login"
+        if not token:
+            return {"ok": False, "detail": "not set, and the gh CLI on this host isn't logged in"}
+        gh = GitHub(token)
+        try:
+            login = (await gh.viewer())["login"]
+        except (GitHubError, httpx.HTTPError) as e:
+            return {"ok": False, "detail": f"GitHub rejected the {source}: {str(e)[:200]}"}
+        finally:
+            await gh.close()
+        return {"ok": True, "detail": f"signed in as @{login} (via {source})"}
+
+    @app.get("/api/credentials")
+    async def credentials_status() -> dict[str, Any]:
+        s = store.settings()
+        return {"anthropic_api_key": await check_anthropic(s["anthropic_api_key"]),
+                "github_token": await check_github(s["github_token"])}
+
+    @app.post("/api/credentials")
+    async def save_credentials(anthropic_api_key: str = Body(""), github_token: str = Body("")) -> dict[str, Any]:
+        """Check each credential provided; save the ones that work. Blank means keep the stored value."""
+        s = store.settings()
+        out: dict[str, Any] = {}
+        for key, value, check in (("anthropic_api_key", anthropic_api_key.strip(), check_anthropic),
+                                  ("github_token", github_token.strip(), check_github)):
+            result = await check(value or s[key])
+            if value:
+                result["saved"] = bool(result["ok"])
+                if result["ok"]:
+                    store.update_settings({key: value})
+                else:
+                    result["detail"] = f"not saved: {result['detail']}"
+            out[key] = result
+        if out["github_token"].get("saved"):
+            harness.status["github_user"] = None
+            harness.poll_now()
+        return out
 
     @app.delete("/api/secrets/{key}")
     async def clear_secret(key: str) -> dict[str, Any]:
