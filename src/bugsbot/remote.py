@@ -23,7 +23,6 @@ import fcntl
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import struct
@@ -35,6 +34,7 @@ from pathlib import Path
 
 from bugsbot.agent import guardrails
 from bugsbot.anthropic_check import needs_login
+from bugsbot.claude_trust import TrustError, trust_folder, untrust_all_inside, untrust_folder
 from bugsbot.github import GitHub, resolve_token
 from bugsbot.store import Store
 from bugsbot.workspace import Workspace, agent_env, git
@@ -72,33 +72,8 @@ def find_session_link(cwd: Path, since: float) -> str | None:
 
 
 def workers_root(home: Path) -> Path:
-    """Every worker checkout lives under this one folder, so trusting it once (in Claude Code)
-    covers all future workers."""
+    """Every worker checkout lives under this folder; bugsbot only manages Claude Code trust inside it."""
     return home / "workers"
-
-
-def claude_config_file() -> Path:
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config_dir) / ".claude.json" if config_dir else Path.home() / ".claude.json"
-
-
-def trust_status(home: Path) -> dict[str, object]:
-    """Whether Claude Code has trusted the workers folder (or a parent of it).
-
-    Read-only: bugsbot never edits Claude Code's config. Trust is granted by running
-    `claude` in the folder once and accepting the prompt.
-    """
-    root = workers_root(home)
-    root.mkdir(parents=True, exist_ok=True)
-    command = f"cd {shlex.quote(str(root))} && claude"
-    try:
-        projects = json.loads(claude_config_file().read_text()).get("projects", {})
-    except (OSError, ValueError):
-        projects = {}
-    for folder in (root, *root.parents):
-        if projects.get(str(folder), {}).get("hasTrustDialogAccepted"):
-            return {"trusted": True, "root": str(root), "trusted_via": str(folder), "command": command}
-    return {"trusted": False, "root": str(root), "command": command}
 
 
 def worker_env(store: Store, home: Path) -> dict[str, str]:
@@ -146,6 +121,7 @@ class RemoteWorker:
         self._startup_text = ""
         self._login_warned = False
         self.untrusted = False
+        self.cwd: Path | None = None
         self._stop_reason = "stopped from bugsbot"
         self.task = asyncio.create_task(self._main())
 
@@ -199,13 +175,12 @@ class RemoteWorker:
         self._startup_text = (self._startup_text + text)[-4000:]
         if (not self.untrusted and TRUST_RE.search(self._startup_text)
                 and TRUST_CONTEXT_RE.search(self._startup_text)):
-            # bugsbot never answers security prompts itself; fail with instructions instead.
+            # bugsbot never answers prompts itself. Trust is recorded before start, so this means the
+            # record was lost (e.g. overwritten by another Claude Code process); fail rather than hang.
             self.untrusted = True
-            status = trust_status(self.home)
-            self.log("error", "Claude Code is asking whether to trust this worker's folder, so the worker "
-                              f"can't start unattended. Trust the workers folder once: on this host run "
-                              f"`{status['command']}`, accept the prompt, then /exit. Workers under "
-                              f"{status['root']} are then trusted.")
+            self.log("error", "Claude Code is asking whether to trust this worker's folder even though bugsbot "
+                              "recorded trust for it, most likely because another Claude Code process rewrote its "
+                              "config at the same moment. Start the worker again.")
         if not self.link and (m := LINK_RE.search(text)):
             self._set_link(m.group(0))
         if not self._login_warned and needs_login(text):
@@ -235,6 +210,9 @@ class RemoteWorker:
                 raise RuntimeError("the `claude` CLI is not installed on this host")
             cwd = await self._prepare_cwd()
             guardrails.install(cwd, self.home, self.run_id, self.repo or None, WORKER_RULES + self.branch_rules())
+            trust_folder(cwd, workers_root(self.home))
+            self.cwd = cwd
+            self.log("info", f"Recorded Claude Code folder trust for {cwd}")
 
             master, slave = os.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 160, 0, 0))
@@ -265,7 +243,7 @@ class RemoteWorker:
                 if not self.link and (link := find_session_link(cwd, started)):
                     self._set_link(link)
                 if self.untrusted:
-                    raise RuntimeError("the worker's folder isn't trusted by Claude Code (see above)")
+                    raise RuntimeError("Claude Code asked to trust the worker's folder (see above)")
                 if not self.link and time.time() - started > STARTUP_TIMEOUT:
                     raise TimeoutError(f"the session didn't connect within {STARTUP_TIMEOUT}s "
                                        "(see the terminal output above)")
@@ -282,6 +260,11 @@ class RemoteWorker:
             self.log("error", traceback.format_exc())
         finally:
             await self._terminate()
+            if self.cwd:
+                try:
+                    untrust_folder(self.cwd, workers_root(self.home))
+                except (TrustError, OSError) as e:
+                    self.log("error", f"couldn't remove Claude Code trust for {self.cwd}: {e}")
             if master >= 0:
                 asyncio.get_running_loop().remove_reader(master)
                 os.close(master)
@@ -323,6 +306,11 @@ class WorkerManager:
                     os.killpg(pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
+        # No worker is running yet, so any trust entries inside the workers folder are leftovers.
+        try:
+            untrust_all_inside(workers_root(self.home))
+        except (TrustError, OSError):
+            pass
 
     def open(self, repo: str, branch: str, name: str) -> int:
         label = name.strip() or (repo.split("/")[-1] if repo else "scratch")

@@ -91,13 +91,14 @@ start-up output and duration, and can stop it.
 - **Branch** is optional. An existing branch is checked out; a new name is created from the default
   branch. If it's blank, the worker starts on the default branch (which it can't push to) and
   creates a branch named for the task once you've told it what to do.
-- **One-time setup: trust the workers folder.** Claude Code asks whether to trust each new folder
-  before it starts there. It also only loads the hooks and tools bugsbot installs once a folder is
-  trusted. All worker checkouts live under `~/.bugsbot/workers/` (`<home>/workers`). As the OS user
-  running bugsbot, run `cd ~/.bugsbot/workers && claude`, accept the prompt, then `/exit`. New
-  folders inside it are then trusted too. The Remote workers page shows whether this is done, and
-  won't start workers until it is. bugsbot never answers the trust prompt itself; if one appears,
-  the worker fails straight away with these instructions.
+- **Folder trust:** Claude Code asks whether to trust each new folder, and trust isn't inherited
+  from parent folders. Each worker gets a fresh checkout under `~/.bugsbot/workers/`, so just before
+  starting a worker bugsbot records trust for that one folder in Claude Code's config
+  (`~/.claude.json`, the same flag accepting the prompt sets). It removes the entry when the worker
+  ends. It never touches entries outside the workers folder, and writes atomically. If another
+  Claude Code process overwrites the change at the same moment and the prompt appears anyway, the
+  worker fails immediately with a message to start it again. bugsbot never answers the prompt
+  itself.
 - The worker gets bugsbot's rules through project-local Claude Code config in the checkout,
   hidden from git: the no-merge/no-push hook, the signed `push_branch`/`open_pull_request`/
   `comment` tools, and the hard rules in `CLAUDE.local.md`.

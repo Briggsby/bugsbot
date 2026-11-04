@@ -115,6 +115,8 @@ def test_worker_lifecycle_with_fake_claude(tmp_path, monkeypatch):
         assert worker.link == "https://claude.ai/code/session_01FAKE"
         assert worker.name == f"bugsbot-{run_id}-my-task"
         assert store.run(run_id)["worker_pid"] == worker.proc.pid
+        projects = json.loads((tmp_path / "claude-home/.claude.json").read_text())["projects"]
+        assert projects[str(worker.cwd.resolve())]["hasTrustDialogAccepted"] is True
         await asyncio.sleep(1.5)  # let the post-connect output arrive
         worker.stop()
         await asyncio.wait_for(asyncio.gather(worker.task, return_exceptions=True), timeout=10)
@@ -129,6 +131,7 @@ def test_worker_lifecycle_with_fake_claude(tmp_path, monkeypatch):
     assert args[:3] == ["remote-control", "--spawn", "session"] and "bypassPermissions" in args
     events = [e["type"] + ":" + e["text"] for e in store.events(run_id)]
     assert "terminal:Remote Control starting" in events  # ANSI stripped
+    assert json.loads((tmp_path / "claude-home/.claude.json").read_text())["projects"] == {}  # trust removed
     assert (tmp_path / "home/workers/scratch" / f"worker-{run_id}" / "CLAUDE.local.md").exists()
     assert not any("PRIVATE CHAT MESSAGE" in e for e in events)  # nothing recorded once connected
     assert any("controlled from the Claude app" in e for e in events)
@@ -262,21 +265,6 @@ def test_worker_that_never_connects_times_out(tmp_path, monkeypatch):
     assert run["status"] == "failed" and "didn't connect" in run["error"]
 
 
-def test_trust_status(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
-    home = tmp_path / "home"
-    status = remote.trust_status(home)
-    assert status["trusted"] is False and status["root"] == str(home / "workers")
-    assert status["command"] == f"cd {home / 'workers'} && claude" and (home / "workers").is_dir()
-    (tmp_path / "cc").mkdir()
-    cfg = tmp_path / "cc/.claude.json"
-    cfg.write_text(json.dumps({"projects": {str(home / "workers"): {"hasTrustDialogAccepted": False}}}))
-    assert remote.trust_status(home)["trusted"] is False
-    cfg.write_text(json.dumps({"projects": {str(home): {"hasTrustDialogAccepted": True}}}))  # a parent counts
-    status = remote.trust_status(home)
-    assert status["trusted"] is True and status["trusted_via"] == str(home)
-
-
 def test_untrusted_worker_fails_fast_without_answering(tmp_path, monkeypatch):
     _install_fake_claude(tmp_path, monkeypatch)
     monkeypatch.setenv("FAKE_ARGS", str(tmp_path / "args.json"))
@@ -295,18 +283,6 @@ def test_untrusted_worker_fails_fast_without_answering(tmp_path, monkeypatch):
 
     store, run_id = asyncio.run(scenario())
     run = store.run(run_id)
-    assert run["status"] == "failed" and "isn't trusted" in run["error"]
+    assert run["status"] == "failed" and "asked to trust" in run["error"]
     errors = [e["text"] for e in store.events(run_id) if e["type"] == "error"]
-    assert any("&& claude" in e and "/exit" in e for e in errors)
-
-
-def test_worker_start_refused_when_folder_untrusted(tmp_path, monkeypatch):
-    async def logged_in(store, home):
-        return {"ok": True, "detail": "ready"}
-    monkeypatch.setattr("bugsbot.app.claude_account", logged_in)
-    monkeypatch.setattr("bugsbot.app.trust_status", lambda home: {"trusted": False, "command": "cd /w && claude"})
-    app = create_app(tmp_path)
-    c = TestClient(app)
-    c.get(f"/auth/link?t={app.state.auth.mint_login_link()}")
-    r = c.post("/api/workers", json={}, headers={"X-Bugsbot": "1"})
-    assert r.status_code == 400 and "cd /w && claude" in r.json()["detail"]
+    assert any("Start the worker again" in e for e in errors)
