@@ -23,10 +23,10 @@ from claude_agent_sdk import (
     tool,
 )
 
-from .github import GitHub, GitHubError, sign
-from .store import Store
-from .work import PendingComment, Work
-from .workspace import GitError, Workspace, agent_env
+from bugsbot.github import GitHub, GitHubError, sign
+from bugsbot.store import Store
+from bugsbot.work import PendingComment, Work
+from bugsbot.workspace import GitError, Workspace, agent_env
 
 # Commands the agent's shell may never run. All GitHub writes go through harness tools.
 FORBIDDEN_COMMANDS = [

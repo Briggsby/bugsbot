@@ -14,12 +14,12 @@ import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from .auth import COOKIE, LINK_USER, SESSION_TTL, Auth
-from .chat import ChatManager
-from .github import GitHubError
-from .harness import Harness
-from .oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
-from .store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
+from bugsbot.auth import COOKIE, LINK_USER, SESSION_TTL, Auth
+from bugsbot.chat import ChatManager
+from bugsbot.github import GitHubError
+from bugsbot.harness import Harness
+from bugsbot.oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
+from bugsbot.store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
 
 PUBLIC_PATHS = {"/login", "/auth/link", "/api/auth/options", "/auth/github", "/auth/github/callback"}
 

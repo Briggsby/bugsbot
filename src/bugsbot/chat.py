@@ -14,10 +14,10 @@ from typing import Any
 
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage, tool
 
-from .agent import SYSTEM_APPEND, build_options, log_message
-from .github import GitHub, GitHubError, resolve_token, sign
-from .store import Store
-from .workspace import GitError, Workspace
+from bugsbot.agent import SYSTEM_APPEND, build_options, log_message
+from bugsbot.github import GitHub, GitHubError, resolve_token, sign
+from bugsbot.store import Store
+from bugsbot.workspace import GitError, Workspace
 
 CHAT_APPEND = SYSTEM_APPEND + """
 You are in an interactive chat with a maintainer through the bugsbot web UI. Do what they

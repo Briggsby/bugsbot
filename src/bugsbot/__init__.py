@@ -10,7 +10,7 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from .store import default_home
+from bugsbot.store import default_home
 
 
 def _port_free(host: str, port: int) -> bool:
@@ -24,8 +24,8 @@ def _base_url(args: argparse.Namespace, port: int) -> str:
 
 
 def _login_link(home: Path, base: str) -> str:
-    from .auth import Auth
-    from .store import Store
+    from bugsbot.auth import Auth
+    from bugsbot.store import Store
 
     return f"{base}/auth/link?t={Auth(Store(home)).mint_login_link()}"
 
@@ -58,7 +58,7 @@ def main() -> None:
 
     import uvicorn  # imported late so --help is fast
 
-    from .app import create_app
+    from bugsbot.app import create_app
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)

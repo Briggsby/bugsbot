@@ -13,8 +13,8 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .github import API, GitHub, GitHubError, resolve_token
-from .store import Store
+from bugsbot.github import API, GitHub, GitHubError, resolve_token
+from bugsbot.store import Store
 
 log = logging.getLogger("bugsbot.oauth")
 

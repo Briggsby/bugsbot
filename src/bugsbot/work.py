@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .github import TRUSTED_ASSOCIATIONS, is_bugsbot, replied_keys
+from bugsbot.github import TRUSTED_ASSOCIATIONS, is_bugsbot, replied_keys
 
 
 @dataclass

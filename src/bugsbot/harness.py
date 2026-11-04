@@ -9,10 +9,10 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .agent import AgentRun, RunContext
-from .github import GitHub, GitHubError, resolve_token
-from .store import Store
-from .work import Work, issue_work, pr_work
+from bugsbot.agent import AgentRun, RunContext
+from bugsbot.github import GitHub, GitHubError, resolve_token
+from bugsbot.store import Store
+from bugsbot.work import Work, issue_work, pr_work
 
 log = logging.getLogger("bugsbot")
 

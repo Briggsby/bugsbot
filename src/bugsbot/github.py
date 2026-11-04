@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from .store import DEFAULT_SIGNATURE
+from bugsbot.store import DEFAULT_SIGNATURE
 
 API = "https://api.github.com"
 MARKER = "<!-- bugsbot -->"

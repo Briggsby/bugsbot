@@ -14,7 +14,7 @@ import hmac
 import secrets
 import time
 
-from .store import Store
+from bugsbot.store import Store
 
 COOKIE = "bugsbot_session"
 SESSION_TTL = 24 * 3600
