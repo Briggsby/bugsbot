@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_call:  # the deploy workflow runs this on main before deploying
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+      - name: Check deploy scripts
+        run: for f in deploy/*.sh; do bash -n "$f"; done

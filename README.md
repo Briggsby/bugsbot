@@ -48,6 +48,9 @@ State (settings, repos, labels, tracked items, run history) lives in `~/.bugsbot
 (`--home` or `$BUGSBOT_HOME` to change), so it survives restarts. Agent checkouts live in
 `~/.bugsbot/workspaces/`.
 
+To run it on a server instead, the **Deploy** GitHub Actions workflow sets up a Hetzner Cloud
+server end to end; see [deploy/README.md](deploy/README.md).
+
 ### Options
 
 | Flag | Default | |
