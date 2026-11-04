@@ -12,6 +12,7 @@
 #   BUGSBOT_REPOS / BUGSBOT_LABELS   comma-separated; added to what's tracked (never removed)
 #   ADMIN_SSH_PUBLIC_KEYS    extra public keys (one per line) allowed to SSH in as root
 #   BUGSBOT_SETTINGS_JSON    any other settings, e.g. {"model": "claude-opus-5-5"}
+#   HARDEN_SSH               1 (default) turns off SSH password login; deploy/local.sh sets 0
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/bugsbot/app}"
@@ -51,7 +52,7 @@ apt-get install -y -qq gh ${BUGSBOT_DOMAIN:+caddy} >/dev/null
 
 # -- host basics -----------------------------------------------------------------
 
-if [[ ! -f /swapfile ]]; then
+if [[ ! -f /swapfile && -z "$(swapon --noheadings --show 2>/dev/null)" ]]; then
   log "adding 2 GB of swap"
   fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null
   if swapon /swapfile; then
@@ -61,7 +62,7 @@ if [[ ! -f /swapfile ]]; then
   fi
 fi
 
-if [[ -d /etc/ssh/sshd_config.d ]]; then
+if [[ "${HARDEN_SSH:-1}" == 1 && -d /etc/ssh/sshd_config.d ]]; then
   cat >/etc/ssh/sshd_config.d/10-bugsbot.conf <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -216,14 +217,16 @@ fi
 echo
 log "bugsbot is running."
 if [[ -n "${BUGSBOT_DOMAIN:-}" ]]; then
-  log "  web UI: https://$BUGSBOT_DOMAIN/  (point the domain's DNS at this server)"
+  log "  web UI: https://$BUGSBOT_DOMAIN/"
+  [[ "$BUGSBOT_DOMAIN" == *.sslip.io ]] || log "    (point the domain's DNS at this server)"
 else
   log "  web UI: localhost only; use an SSH tunnel: ssh -L $PORT:127.0.0.1:$PORT root@<server>"
 fi
-log "  GitHub CLI: ${gh_status:-NOT signed in (set the BUGSBOT_GITHUB_TOKEN secret)}"
+log "  GitHub CLI: ${gh_status:-NOT signed in (set BUGSBOT_GITHUB_TOKEN)}"
 if [[ "$(jq -r '.loggedIn // false' <<<"$claude_status")" == "true" ]]; then
   log "  Claude Code: signed in as $(jq -r '.email // "?"' <<<"$claude_status")"
 else
-  log "  Claude Code: NOT signed in. Once, run: ssh -t root@<server> sudo -iu $USER_NAME claude"
+  log "  Claude Code: NOT signed in. Once, on the host run: sudo -iu $USER_NAME claude"
+  log "    (from elsewhere: ssh -t root@<server> sudo -iu $USER_NAME claude)"
   log "    then type /login and follow the link. It stays signed in after that."
 fi

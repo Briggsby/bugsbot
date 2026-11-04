@@ -49,7 +49,8 @@ State (settings, repos, labels, tracked items, run history) lives in `~/.bugsbot
 `~/.bugsbot/workspaces/`.
 
 To run it on a server instead, the **Deploy** GitHub Actions workflow sets up a Hetzner Cloud
-server end to end; see [deploy/README.md](deploy/README.md).
+server end to end, and `deploy/local.sh` sets up the machine you run it on; see
+[deploy/README.md](deploy/README.md).
 
 ### Options
 

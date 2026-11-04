@@ -119,3 +119,29 @@ web UI's URL. Then:
   (`ssh -L 8765:127.0.0.1:8765 root@<ip>`) and drop `--public-url`.
 - **Tear down:** delete the server, firewall and SSH key in the Hetzner console. This deletes
   bugsbot's state.
+
+## Deploying on your own machine
+
+`deploy/local.sh` sets up bugsbot on the machine you run it on. The machine needs Ubuntu or
+Debian with systemd, and a public IP. It uses the same provisioning as the Hetzner deploy, but
+leaves your SSH settings alone.
+
+```sh
+git clone https://github.com/Briggsby/bugsbot && cd bugsbot
+cp deploy/local.env.example deploy/local.env && chmod 600 deploy/local.env   # fill it in
+sudo deploy/local.sh
+```
+
+It:
+- finds the machine's public IP and serves the UI at `https://<ip-with-dashes>.sslip.io/`. Set
+  `BUGSBOT_DOMAIN` to use your own domain, or `none` to keep it local;
+- opens ports 80 and 443 in `ufw`, if `ufw` is active;
+- warns if the public IP isn't on any of the machine's interfaces, which usually means it's
+  behind a router. You then need to forward TCP 80 and 443 to it, or Let's Encrypt can't issue
+  the certificate.
+
+`deploy/local.env` takes the same names as the GitHub secrets and variables above, and git
+ignores it. To update, `git pull` and re-run `sudo deploy/local.sh`.
+
+Most home connections get a new IP from time to time. When that happens, the sslip.io name
+changes, so re-run the script, then update the OAuth App's callback URL.
