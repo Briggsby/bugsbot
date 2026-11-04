@@ -3,12 +3,12 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from bugsbot.agent.policy import make_guard
 from bugsbot.app import create_app
 from bugsbot.auth import LINK_USER, Auth
 from bugsbot.github import MARKER, is_bugsbot, replied_keys, sign
 from bugsbot.store import DEFAULT_SIGNATURE, Store
 from bugsbot.authors import association_policy
+from bugsbot.providers.claude.agent import make_guard
 from bugsbot.work import issue_work, pr_work
 
 TRUSTED, ANYONE = association_policy(True), association_policy(False)
@@ -120,7 +120,7 @@ def test_sessions(tmp_path):
 def test_api_requires_auth(tmp_path, monkeypatch):
     async def key_ok(key, model):
         return None
-    monkeypatch.setattr("bugsbot.app.check_api_key", key_ok)
+    monkeypatch.setattr("bugsbot.providers.claude.credentials.check_api_key", key_ok)
     app = create_app(tmp_path)
     anon = TestClient(app)
     assert anon.get("/api/state").status_code == 401
@@ -168,7 +168,7 @@ def test_bad_api_key_is_rejected_on_save(tmp_path, monkeypatch):
     async def key_bad(key, model):
         seen.append((key, model))
         return "Anthropic rejected this API key"
-    monkeypatch.setattr("bugsbot.app.check_api_key", key_bad)
+    monkeypatch.setattr("bugsbot.providers.claude.credentials.check_api_key", key_bad)
     app = create_app(tmp_path)
     c = link_client(app)
     r = c.put("/api/settings", json={"anthropic_api_key": " sk-ant-bad "}, headers={"X-Bugsbot": "1"})
@@ -179,7 +179,7 @@ def test_bad_api_key_is_rejected_on_save(tmp_path, monkeypatch):
 
 def test_check_api_key_format():
     import asyncio
-    from bugsbot.anthropic_check import check_api_key, needs_login
+    from bugsbot.providers.claude.credentials import check_api_key, needs_login
     assert "sk-ant-" in asyncio.run(check_api_key("abc123", "claude-opus-5-5"))
     assert needs_login("Invalid API key · Please run /login")
     assert needs_login("Not logged in · Please run /login") and not needs_login("all good")
@@ -201,7 +201,7 @@ def test_credentials_check_and_save(tmp_path, monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr("bugsbot.app.check_api_key", key_check)
+    monkeypatch.setattr("bugsbot.providers.claude.credentials.check_api_key", key_check)
     monkeypatch.setattr("bugsbot.app.GitHub", FakeGH)
     monkeypatch.setattr("bugsbot.app.resolve_token", lambda configured: configured or "")
     app = create_app(tmp_path)

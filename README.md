@@ -35,7 +35,8 @@ mint another one at any time, e.g. if OAuth is misconfigured.
 In the UI:
 
 1. **Settings → GitHub sign-in**: register an OAuth App and choose who's allowed in (see below).
-2. **Settings**: add your Anthropic API key. If you leave it blank, Claude Code's own login is used.
+2. **Settings**: add your Anthropic API key (or a Cursor API key, to use Cursor; see
+   [Agent providers](#agent-providers)). If you leave it blank, Claude Code's own login is used.
    You can also add a GitHub token; if blank, your `gh auth login` session is used. The token needs
    repo contents, issues and pull requests read/write access.
 3. **Repos & labels**: pick repositories (use "Load my repos" to choose from yours) and add one or
@@ -82,9 +83,37 @@ Put it behind a TLS-terminating reverse proxy, e.g.
 `bugsbot --host 127.0.0.1 --public-url https://bugsbot.example.com --no-browser` with your proxy
 forwarding to it. Don't serve it over plain HTTP on the internet.
 
+## Agent providers
+
+bugsbot can run its agents on **Claude Code** or **Cursor**. Choose under **Settings → Agent
+behaviour → Agent for issues & PRs**; each run records which provider it used.
+
+| | Claude Code | Cursor |
+|---|---|---|
+| Issue and PR runs | Claude Agent SDK, on this host | Cursor's headless CLI (`agent -p`), on this host |
+| Credentials | Anthropic API key, or the host's Claude Code login | Cursor API key, or the host's `agent login` |
+| bugsbot's tools, hook and credential isolation | Yes | Yes |
+| Limits | Max turns, USD budget, time | Time only (the CLI reports no turns or cost) |
+| Remote workers | Claude Code Remote Control, on this host | Cursor Cloud Agents, in Cursor's cloud |
+
+For Cursor runs, install the CLI on the host (`curl https://cursor.com/install -fsS | bash`) and
+add a Cursor API key (Cursor dashboard → Integrations → User API Keys) under **Settings →
+Credentials**. bugsbot gives the CLI its tools as an MCP server in `.cursor/mcp.json`, and its
+command check as a `beforeShellExecution` hook in `.cursor/hooks.json`. It writes both into the
+checkout and hides them from git. The rules go at the top of the prompt.
+
+The code for each provider lives in its own package under `src/bugsbot/providers/`, behind a common
+interface (`providers/base.py`).
+
 ## Remote workers
 
-**Remote workers** in the web UI starts `claude remote-control` on the bugsbot host, in a fresh
+A remote worker is an agent you chat with in its provider's own app, not in bugsbot. bugsbot starts
+it, links to it, tracks how long it runs, and can stop it. Pick the kind on the **Remote workers**
+tab.
+
+### Claude Code Remote Control
+
+This starts `claude remote-control` on the bugsbot host, in a fresh
 checkout of a tracked repo (or an empty scratch folder). You talk to the worker from the Claude app,
 not from bugsbot. bugsbot shows an **Open in Claude** link once the session connects, records its
 start-up output and duration, and can stop it.
@@ -112,6 +141,27 @@ start-up output and duration, and can stop it.
   `comment` tools, and the hard rules in `CLAUDE.local.md`.
 - The session link is read from Claude Code's local session records, which aren't a public
   format. If it's missing, look for the worker by name in the Claude app's Code section.
+
+### Cursor Cloud Agents
+
+This launches a [Cursor Cloud Agent](https://cursor.com/docs/cloud-agent) through Cursor's API.
+It runs on Cursor's machines against a tracked repo, and you chat with it at
+[cursor.com/agents](https://cursor.com/agents) in any browser, or in Cursor. It needs a Cursor API
+key, and usage counts against that key's Cursor account.
+
+- **First message:** you give it one, which tells it what to start on. After that you talk to it in
+  Cursor. bugsbot doesn't record the conversation, only the agent's status and the branches and PRs
+  it reports.
+- **Branch:** name an existing branch to work on it, or a new name, which bugsbot creates from the
+  default branch on GitHub first. Leave it blank and Cursor makes a `cursor/…` branch. Protected
+  branches are refused.
+- **Stopping:** stopping it from bugsbot cancels its current run and archives it in Cursor. You can
+  unarchive it there. Archiving or deleting it in Cursor ends it in bugsbot too.
+- **Restarts:** it keeps running if bugsbot restarts, and bugsbot resumes tracking it.
+- **bugsbot's guardrails don't apply.** The agent runs outside this host and pushes with Cursor's
+  GitHub app, so bugsbot can't block merges, isolate credentials or sign its comments. It's only
+  instructed not to merge or push to the default branch, and to add the signature. Protect your
+  default branch with a GitHub ruleset, and limit what Cursor's GitHub app can access.
 
 ## How the polling works
 
@@ -141,17 +191,21 @@ repo. It only takes a closer look at items whose `updated_at` changed:
   credential helpers, and SSH disabled. All authenticated git and GitHub traffic goes through the
   harness's own tools: `comment`, `reply_to_comment`, `push_branch` and `open_pull_request`. These
   sign the text and refuse to push to the default branch.
-- A `PreToolUse` hook blocks `gh pr merge`, `/merge` API calls, `git push`, and `gh pr|issue`
-  write commands.
+- A hook blocks `gh pr merge`, `/merge` API calls, `git push`, and `gh pr|issue` write commands.
+  For Claude it's a `PreToolUse` hook; for Cursor's CLI, a `beforeShellExecution` hook. Cursor
+  documents its hooks for the editor and cloud agents, but not yet explicitly for the CLI. Even
+  without the hook, the agent has no GitHub credentials to merge or push with.
+- None of this applies to Cursor Cloud Agent workers (see [Remote workers](#cursor-cloud-agents)).
 - The GitHub client has no merge method.
 - Issue and comment text is treated as untrusted input. Agents can search and fetch the web for
   research, and their shell has normal network access. They run arbitrary code in their checkout
-  on the host, and the Anthropic API key (if set) is in their environment. So run bugsbot on a
+  on the host, and the Anthropic or Cursor API key (if set) is in their environment. So run bugsbot on a
   machine or container you're comfortable giving that access to. The defences against prompt
   injection are who can trigger work: only labelled items, and by default only trusted
   commenters.
 - Web searches are billed per search on top of tokens.
-- Each run is capped by max turns and a USD budget (configurable).
+- Each run is capped by a time limit, and Claude runs also by max turns and a USD budget
+  (all configurable).
 
 ## Development
 

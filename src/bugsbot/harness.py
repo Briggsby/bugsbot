@@ -9,6 +9,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from bugsbot import providers
 from bugsbot.agent.run import AgentRun, RunContext
 from bugsbot.github import GitHub, GitHubError, resolve_token
 from bugsbot.store import Store
@@ -159,20 +160,22 @@ class Harness:
     # -- runs ------------------------------------------------------------------
 
     def _start_run(self, item: dict[str, Any], work: Work, allow: AuthorCheck) -> int:
-        run_id = self.store.start_run(item, work.trigger, work.trigger_key)
+        provider = providers.get(self.store.get_setting("agent_provider")).name
+        run_id = self.store.start_run(item, work.trigger, work.trigger_key, provider)
         self.store.update_item(item["id"], status="running", status_detail=work.trigger,
                                last_trigger_key=work.trigger_key)
-        task = asyncio.create_task(self._execute(run_id, item, work, allow))
+        task = asyncio.create_task(self._execute(run_id, item, work, allow, provider))
         self.tasks[item["id"]] = (run_id, task)
         return run_id
 
-    async def _execute(self, run_id: int, item: dict[str, Any], work: Work, allow: AuthorCheck) -> None:
+    async def _execute(self, run_id: int, item: dict[str, Any], work: Work, allow: AuthorCheck,
+                       provider: str) -> None:
         gh = self.github()
         status, summary, error, turns, cost = "failed", "", "", None, None
         try:
             ctx = RunContext(store=self.store, gh=gh, home=self.home, run_id=run_id, item=item,
                              work=work, tracked_labels=self.store.labels(), author_allowed=allow)
-            outcome = await AgentRun(ctx).run()
+            outcome = await AgentRun(ctx, providers.get(provider)).run()
             status, summary, turns, cost = outcome.status, outcome.summary, outcome.num_turns, outcome.cost_usd
         except asyncio.CancelledError:
             status, error = "cancelled", "cancelled from the web UI"

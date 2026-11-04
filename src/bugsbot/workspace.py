@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import subprocess
 from pathlib import Path
 
 
@@ -55,6 +56,23 @@ def agent_env(home: Path, author_name: str, author_email: str) -> dict[str, str]
         "GITHUB_TOKEN": "",
         "GH_ENTERPRISE_TOKEN": "",
     }
+
+
+def hide_from_git(cwd: Path, files: list[str]) -> None:
+    """Keep config bugsbot writes into a checkout out of the agent's commits."""
+    if not (cwd / ".git").exists():
+        return
+    exclude = cwd / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    missing = [f for f in files if f not in existing.splitlines()]
+    if missing:
+        exclude.write_text(existing.rstrip("\n") + "\n" + "\n".join(missing) + "\n")
+    # Files the repo already tracks: keep our edits out of the agent's commits.
+    for f in files:
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", f], cwd=cwd, capture_output=True)
+        if tracked.returncode == 0:
+            subprocess.run(["git", "update-index", "--skip-worktree", f], cwd=cwd, check=False)
 
 
 class Workspace:

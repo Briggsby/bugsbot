@@ -15,13 +15,13 @@ import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from bugsbot.anthropic_check import check_api_key
+from bugsbot import providers
 from bugsbot.auth import COOKIE, LINK_USER, SESSION_TTL, Auth
 from bugsbot.github import GitHub, GitHubError, resolve_token
 from bugsbot.harness import Harness
-from bugsbot.remote import WorkerManager, claude_account
 from bugsbot.oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
 from bugsbot.store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
+from bugsbot.workers import WorkerManager
 
 PUBLIC_PATHS = {"/login", "/auth/link", "/api/auth/options", "/auth/github", "/auth/github/callback"}
 
@@ -45,6 +45,19 @@ def _logins(value: str | list[str]) -> list[str]:
     return sorted(unique.values(), key=str.lower)
 
 
+class _Overlay:
+    """A Store view with unsaved setting values on top, for checking settings before saving them."""
+
+    def __init__(self, store: Store, values: dict[str, Any]):
+        self._store, self._values = store, values
+
+    def settings(self) -> dict[str, Any]:
+        return {**self._store.settings(), **self._values}
+
+    def get_setting(self, key: str) -> Any:
+        return self.settings()[key]
+
+
 def _page(name: str) -> str:
     return resources.files("bugsbot").joinpath(f"static/{name}").read_text()
 
@@ -58,7 +71,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        workers.reap_orphans()
+        workers.recover()  # before harness.start() marks runs left 'running' as interrupted
         harness.start()
         yield
         await workers.stop()
@@ -190,7 +203,10 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
             "repo_trust": store.all_repo_trust(),
             "labels": store.labels(),
             "status": {**harness.status, "running": len(harness.tasks)},
-            "workers": {rid: {"name": w.name, "link": w.link} for rid, w in workers.workers.items()},
+            "workers": workers.describe(),
+            "providers": [{"name": p.name, "label": p.label, "worker_label": p.worker_label,
+                           "worker_needs_repo": p.worker_needs_repo, "worker_needs_task": p.worker_needs_task}
+                          for p in providers.PROVIDERS.values()],
             "home": str(home),
         }
 
@@ -209,11 +225,17 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
                 clean[key] = type(default)(value) if not isinstance(default, bool) else bool(value)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"invalid value for {key}")
-        if "anthropic_api_key" in clean or "model" in clean:
-            merged = {**store.settings(), **clean}
-            if merged["anthropic_api_key"] and (problem := await check_api_key(
-                    merged["anthropic_api_key"], merged["model"])):
-                raise HTTPException(400, f"Anthropic API key not saved: {problem}")
+        if "agent_provider" in clean and clean["agent_provider"] not in providers.PROVIDERS:
+            raise HTTPException(400, f"unknown agent provider {clean['agent_provider']!r}")
+        # Check API keys being saved (and the Anthropic key when the model it must work with changes).
+        merged = {**store.settings(), **clean}
+        for provider in providers.PROVIDERS.values():
+            key = provider.credential_setting
+            if key in clean or (key == "anthropic_api_key" and "model" in clean and merged[key]):
+                store_view = _Overlay(store, clean)
+                result = await provider.check_credential(store_view, merged[key])
+                if result["ok"] is False:
+                    raise HTTPException(400, f"{provider.label} API key not saved: {result['detail']}")
         store.update_settings(clean)
         if "github_token" in clean:
             harness.status["github_user"] = None
@@ -221,12 +243,6 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
         return public_settings()
 
     # -- credentials -----------------------------------------------------------
-
-    async def check_anthropic(key: str) -> dict[str, Any]:
-        if not key:
-            return {"ok": None, "detail": "not set: Claude Code's own login on this host will be used"}
-        problem = await check_api_key(key, store.get_setting("model"))
-        return {"ok": problem is None, "detail": problem or f"works with {store.get_setting('model')}"}
 
     async def check_github(configured: str) -> dict[str, Any]:
         token = resolve_token(configured)
@@ -242,19 +258,25 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
             await gh.close()
         return {"ok": True, "detail": f"signed in as @{login} (via {source})"}
 
+    def credential_checks() -> dict[str, Any]:
+        """Settings key -> async check(value) for every credential on the Credentials card."""
+        checks: dict[str, Any] = {p.credential_setting: (lambda v, p=p: p.check_credential(store, v))
+                                  for p in providers.PROVIDERS.values()}
+        checks["github_token"] = check_github
+        return checks
+
     @app.get("/api/credentials")
     async def credentials_status() -> dict[str, Any]:
         s = store.settings()
-        return {"anthropic_api_key": await check_anthropic(s["anthropic_api_key"]),
-                "github_token": await check_github(s["github_token"])}
+        return {key: await check(s[key]) for key, check in credential_checks().items()}
 
     @app.post("/api/credentials")
-    async def save_credentials(anthropic_api_key: str = Body(""), github_token: str = Body("")) -> dict[str, Any]:
+    async def save_credentials(values: dict[str, str] = Body(...)) -> dict[str, Any]:
         """Check each credential provided; save the ones that work. Blank means keep the stored value."""
         s = store.settings()
         out: dict[str, Any] = {}
-        for key, value, check in (("anthropic_api_key", anthropic_api_key.strip(), check_anthropic),
-                                  ("github_token", github_token.strip(), check_github)):
+        for key, check in credential_checks().items():
+            value = str(values.get(key) or "").strip()
             result = await check(value or s[key])
             if value:
                 result["saved"] = bool(result["ok"])
@@ -372,25 +394,35 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     # -- remote workers --------------------------------------------------------
 
+    def worker_provider(name: str):
+        if name not in providers.PROVIDERS:
+            raise HTTPException(400, f"unknown provider {name!r}")
+        return providers.PROVIDERS[name]
+
     @app.get("/api/workers/account")
-    async def worker_account() -> dict[str, Any]:
-        return await claude_account(store, home)
+    async def worker_account(provider: str = "claude") -> dict[str, Any]:
+        return await worker_provider(provider).worker_readiness(store, home)
 
     @app.post("/api/workers")
-    async def open_worker(repo: str = Body(""), branch: str = Body(""), name: str = Body("")) -> dict[str, int]:
-        repo, branch = repo.strip(), branch.strip()
+    async def open_worker(provider: str = Body("claude"), repo: str = Body(""), branch: str = Body(""),
+                          name: str = Body(""), task: str = Body("")) -> dict[str, int]:
+        p = worker_provider(provider)
+        repo, branch, task = repo.strip(), branch.strip(), task.strip()
         if repo and repo not in store.repos():
             raise HTTPException(400, "repo must be one of the tracked repositories")
+        if p.worker_needs_repo and not repo:
+            raise HTTPException(400, f"a {p.worker_label} needs a repository")
+        if p.worker_needs_task and not task:
+            raise HTTPException(400, f"a {p.worker_label} needs a first message describing the task")
         if branch and not repo:
             raise HTTPException(400, "a branch needs a repository")
         if branch and subprocess.run(["git", "check-ref-format", "--branch", branch],
                                      capture_output=True).returncode != 0:
             raise HTTPException(400, f"'{branch}' isn't a valid git branch name")
-        account = await claude_account(store, home)
-        if not account["ok"]:
-            raise HTTPException(400, f"Can't start a remote worker: Claude Code on this host is {account['detail']}. "
-                                     "As the OS user running bugsbot, run `claude`, then /login with your Claude account.")
-        return {"run_id": workers.open(repo, branch, name)}
+        ready = await p.worker_readiness(store, home)
+        if not ready["ok"]:
+            raise HTTPException(400, f"Can't start a {p.worker_label}: {ready['detail']}")
+        return {"run_id": workers.open(p.name, repo, branch, name, task)}
 
     @app.post("/api/workers/{run_id}/stop")
     async def stop_worker(run_id: int) -> dict[str, bool]:

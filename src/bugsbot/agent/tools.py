@@ -2,6 +2,11 @@
 
 Each tool signs the text it publishes, and pushes go through `Workspace.push`, which
 refuses protected branches. Nothing here can merge a pull request.
+
+The tools are MCP tool definitions (via the Claude Agent SDK's `tool` decorator), so any
+provider can use them: in-process for Claude, or over stdio (bugsbot.agent.mcp_stdio).
+What they did is recorded as run events (REPLIED, PR_OPENED), so it's visible to the
+harness whichever process ran them.
 """
 
 from __future__ import annotations
@@ -12,11 +17,13 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
-from bugsbot.agent.session import Log
 from bugsbot.github import GitHub, GitHubError, sign
 from bugsbot.work import PendingComment
 from bugsbot.workspace import GitError, Workspace
 
+Log = Callable[[str, str], None]  # (event type, text)
+REPLIED = "replied"      # event text: the pending comment key answered
+PR_OPENED = "pr_opened"  # event text: the PR number
 OnPrOpened = Callable[[dict[str, Any], bool, list[str]], None]  # (pr, newly_created, labels)
 
 
@@ -60,8 +67,8 @@ class ToolKit:
             return self._ok(f"Commented: {c['html_url']}")
         return comment
 
-    def reply_to_comment(self, number: int, pending: list[PendingComment], replied: set[str]):
-        """Direct replies to the given pending comments; adds each answered key to `replied`."""
+    def reply_to_comment(self, number: int, pending: list[PendingComment]):
+        """Direct replies to the given pending comments; logs a REPLIED event for each one answered."""
         by_key = {p.key: p for p in pending}
 
         @tool("reply_to_comment",
@@ -86,7 +93,7 @@ class ToolKit:
                     c = await self.gh.create_comment(self.repo, number, body)
             except GitHubError as e:
                 return self._err(str(e))
-            replied.add(p.key)
+            self.log(REPLIED, p.key)
             return self._ok(f"Replied to {p.key}: {c['html_url']}")
         return reply_to_comment
 
@@ -136,6 +143,7 @@ class ToolKit:
                 await self.gh.add_labels(self.repo, pr["number"], pr_labels)
             except (GitError, GitHubError) as e:
                 return self._err(str(e))
+            self.log(PR_OPENED, str(pr["number"]))
             if on_opened:
                 on_opened(pr, created, pr_labels)
             verb = "Opened" if created else "Updated existing"

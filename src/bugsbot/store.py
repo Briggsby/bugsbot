@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS runs (
     cost_usd REAL,
     summary TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
-    worker_pid INTEGER                      -- remote worker process, for cleanup after a crash
+    worker_pid INTEGER,                     -- remote worker process, for cleanup after a crash
+    provider TEXT NOT NULL DEFAULT 'claude', -- the agent provider (bugsbot.providers)
+    external_id TEXT NOT NULL DEFAULT ''     -- the provider's id for a worker that outlives bugsbot
 );
 CREATE TABLE IF NOT EXISTS run_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,10 +86,14 @@ DEFAULT_SIGNATURE = (
 )
 
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "agent_provider": "claude",         # which provider handles issue/PR runs (bugsbot.providers)
     "anthropic_api_key": "",
     "github_token": "",
     "model": "claude-opus-5-5",
     "effort": "high",
+    "cursor_api_key": "",
+    "cursor_model": "",                 # blank: Cursor's default model
+    "max_minutes_per_run": 90,          # 0 = no time limit
     "poll_interval_seconds": 60,
     "max_concurrent_agents": 2,
     "max_turns_per_run": 200,
@@ -108,7 +114,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "api_token_hash": "",
 }
 
-SECRET_KEYS = {"anthropic_api_key", "github_token", "github_oauth_client_secret"}
+SECRET_KEYS = {"anthropic_api_key", "cursor_api_key", "github_token", "github_oauth_client_secret"}
 INTERNAL_KEYS = {"session_secret", "api_token_hash"}
 
 
@@ -133,6 +139,8 @@ class Store:
             "ALTER TABLE runs ADD COLUMN worker_pid INTEGER",
             "ALTER TABLE repos ADD COLUMN trusted_users TEXT NOT NULL DEFAULT '[]'",
             "ALTER TABLE repos ADD COLUMN trusted_orgs TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
+            "ALTER TABLE runs ADD COLUMN external_id TEXT NOT NULL DEFAULT ''",
         ):
             try:
                 self._db.execute(migration)
@@ -267,18 +275,28 @@ class Store:
 
     # -- runs -----------------------------------------------------------------
 
-    def start_run(self, item: dict[str, Any], trigger: str, trigger_key: str) -> int:
+    def start_run(self, item: dict[str, Any], trigger: str, trigger_key: str, provider: str = "claude") -> int:
         return self._x(
-            "INSERT INTO runs(item_id, repo, number, kind, trigger, trigger_key, started_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (item["id"], item["repo"], item["number"], item["kind"], trigger, trigger_key, time.time()),
+            "INSERT INTO runs(item_id, repo, number, kind, trigger, trigger_key, started_at, provider) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (item["id"], item["repo"], item["number"], item["kind"], trigger, trigger_key, time.time(), provider),
         )
 
-    def start_worker(self, repo: str, title: str) -> int:
+    def start_worker(self, repo: str, title: str, provider: str = "claude") -> int:
         return self._x(
-            "INSERT INTO runs(item_id, repo, number, kind, trigger, started_at) VALUES (NULL, ?, 0, 'worker', ?, ?)",
-            (repo, title, time.time()),
+            "INSERT INTO runs(item_id, repo, number, kind, trigger, started_at, provider) "
+            "VALUES (NULL, ?, 0, 'worker', ?, ?, ?)",
+            (repo, title, time.time(), provider),
         )
+
+    def set_run_external_id(self, run_id: int, external_id: str) -> None:
+        self._x("UPDATE runs SET external_id = ? WHERE id = ?", (external_id, run_id))
+
+    def resumable_workers(self, provider: str) -> list[dict[str, Any]]:
+        """Workers of `provider` still running elsewhere (they have an external id) when bugsbot stopped."""
+        return [_decode_run(r) for r in self._q(
+            "SELECT * FROM runs WHERE status = 'running' AND kind = 'worker' AND external_id != '' "
+            "AND provider = ? ORDER BY id", (provider,))]
 
     def set_run_summary(self, run_id: int, summary: str) -> None:
         self._x("UPDATE runs SET summary = ? WHERE id = ?", (summary, run_id))
@@ -318,9 +336,12 @@ class Store:
                        (run_id, after_id))
 
     def mark_interrupted_runs(self) -> None:
-        """Runs left 'running' by a previous process can never finish; close them out."""
-        self._x("UPDATE runs SET status = 'interrupted', ended_at = ? WHERE status = 'running'",
-                (time.time(),))
+        """Runs left 'running' by a previous process can never finish; close them out.
+
+        Workers with an external id run outside bugsbot (e.g. Cursor Cloud Agents) and are resumed instead.
+        """
+        self._x("UPDATE runs SET status = 'interrupted', ended_at = ? "
+                "WHERE status = 'running' AND NOT (kind = 'worker' AND external_id != '')", (time.time(),))
         self._x("UPDATE items SET status = 'pending', status_detail = 'previous run interrupted' "
                 "WHERE status = 'running'")
 

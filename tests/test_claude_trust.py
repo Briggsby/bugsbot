@@ -3,8 +3,8 @@ import os
 
 import pytest
 
-from bugsbot import claude_trust
-from bugsbot.claude_trust import (TrustError, mark_remote_control_enabled, trust_folder, untrust_all_inside,
+from bugsbot.providers.claude import trust as claude_trust
+from bugsbot.providers.claude.trust import (TrustError, mark_remote_control_enabled, trust_folder, untrust_all_inside,
                                   untrust_folder)
 
 

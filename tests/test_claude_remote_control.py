@@ -9,10 +9,11 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from bugsbot import remote
-from bugsbot.agent import guardrails
 from bugsbot.app import create_app
+from bugsbot.providers.claude import guardrails
+from bugsbot.providers.claude import remote_control as remote
 from bugsbot.store import Store
+from bugsbot.workers import WorkerManager
 
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
 import os, sys, time, json
@@ -62,13 +63,14 @@ def test_guardrails_install(tmp_path):
     subprocess.run(["git", "add", ".mcp.json"], cwd=cwd, check=True)
 
     for _ in range(2):  # idempotent
-        guardrails.install(cwd, tmp_path / "home", 7, "o/r", "extra rule")
+        guardrails.install(cwd, tmp_path / "home", 7, tmp_path / "spec.json", "extra rule")
     settings = json.loads((cwd / ".claude/settings.local.json").read_text())
     hooks = settings["hooks"]["PreToolUse"]
     assert len(hooks) == 1 and "bugsbot.agent.hook" in hooks[0]["hooks"][0]["command"]
     assert settings["enabledMcpjsonServers"] == ["bugsbot"]
     servers = json.loads((cwd / ".mcp.json").read_text())["mcpServers"]
     assert set(servers) == {"theirs", "bugsbot"} and "--run-id" in servers["bugsbot"]["args"]
+    assert servers["bugsbot"]["args"][-2:] == ["--spec", str(tmp_path / "spec.json")]
     rules = (cwd / "CLAUDE.local.md").read_text()
     assert rules.count(guardrails.MARKER) == 1 and "NEVER merge" in rules and "extra rule" in rules
     # Nothing bugsbot wrote shows up for the agent to commit.
@@ -82,10 +84,11 @@ def test_guardrails_without_repo_has_no_tools(tmp_path):
     assert "enabledMcpjsonServers" not in json.loads((tmp_path / ".claude/settings.local.json").read_text())
 
 
-def _hook(tmp_path, command):
-    proc = subprocess.run([sys.executable, "-m", "bugsbot.agent.hook", "--home", str(tmp_path), "--run-id", "3"],
-                          input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
-                          capture_output=True, text=True, check=True)
+def _hook(tmp_path, command, fmt="claude"):
+    payload = {"command": command, "cwd": "/w"} if fmt == "cursor" else {"tool_name": "Bash",
+                                                                         "tool_input": {"command": command}}
+    proc = subprocess.run([sys.executable, "-m", "bugsbot.agent.hook", "--home", str(tmp_path), "--run-id", "3",
+                           "--format", fmt], input=json.dumps(payload), capture_output=True, text=True, check=True)
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
@@ -94,6 +97,12 @@ def test_command_hook(tmp_path):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert _hook(tmp_path, "ls -la") == {}
     assert Store(tmp_path).events(3)[0]["type"] == "blocked"
+
+
+def test_command_hook_cursor_format(tmp_path):
+    out = _hook(tmp_path, "git push origin main", "cursor")
+    assert out["permission"] == "deny" and "push_branch" in out["agent_message"]
+    assert _hook(tmp_path, "ls -la", "cursor") == {"permission": "allow"}  # Cursor needs an explicit answer
 
 
 def test_find_session_link(tmp_path, monkeypatch):
@@ -121,8 +130,8 @@ def test_worker_lifecycle_with_fake_claude(tmp_path, monkeypatch):
 
     async def scenario():
         store = Store(tmp_path / "home")
-        manager = remote.WorkerManager(store, tmp_path / "home")
-        run_id = manager.open("", "", "my task")
+        manager = WorkerManager(store, tmp_path / "home")
+        run_id = manager.open("claude", "", "", "my task")
         worker = manager.get(run_id)
         for _ in range(100):
             if worker.link:
@@ -173,7 +182,7 @@ class _FakeRepoGH:
 
 
 def _bare_worker(tmp_path, repo="o/r", branch="", label=""):
-    w = remote.RemoteWorker.__new__(remote.RemoteWorker)
+    w = remote.RemoteWorker.__new__(remote.RemoteWorker)  # without starting it
     w.store, w.home, w.run_id = Store(tmp_path), tmp_path, 5
     w.repo, w.branch, w.name, w.label, w.default_branch = repo, branch, "bugsbot-5", label, ""
     return w
@@ -253,7 +262,7 @@ def test_claude_account_without_cli(tmp_path, monkeypatch):
 def test_worker_start_refused_when_not_logged_in(tmp_path, monkeypatch):
     async def logged_out(store, home):
         return {"ok": False, "detail": "not logged in"}
-    monkeypatch.setattr("bugsbot.app.claude_account", logged_out)
+    monkeypatch.setattr(remote, "claude_account", logged_out)
     app = create_app(tmp_path)
     c = TestClient(app)
     c.get(f"/auth/link?t={app.state.auth.mint_login_link()}")
@@ -270,8 +279,8 @@ def test_worker_that_never_connects_times_out(tmp_path, monkeypatch):
 
     async def scenario():
         store = Store(tmp_path / "home")
-        manager = remote.WorkerManager(store, tmp_path / "home")
-        run_id = manager.open("", "", "")
+        manager = WorkerManager(store, tmp_path / "home")
+        run_id = manager.open("claude", "", "", "")
         worker = manager.get(run_id)
         await asyncio.wait_for(asyncio.gather(worker.task, return_exceptions=True), timeout=15)
         assert worker.proc.returncode is not None  # process was terminated
@@ -289,8 +298,8 @@ def test_untrusted_worker_fails_fast_without_answering(tmp_path, monkeypatch):
 
     async def scenario():
         store = Store(tmp_path / "home")
-        manager = remote.WorkerManager(store, tmp_path / "home")
-        run_id = manager.open("", "", "")
+        manager = WorkerManager(store, tmp_path / "home")
+        run_id = manager.open("claude", "", "", "")
         worker = manager.get(run_id)
         start = time.time()
         await asyncio.wait_for(asyncio.gather(worker.task, return_exceptions=True), timeout=15)
@@ -313,8 +322,8 @@ def test_worker_answers_enable_remote_control(tmp_path, monkeypatch, mode, key, 
 
     async def scenario():
         store = Store(tmp_path / "home")
-        manager = remote.WorkerManager(store, tmp_path / "home")
-        run_id = manager.open("", "", "")
+        manager = WorkerManager(store, tmp_path / "home")
+        run_id = manager.open("claude", "", "", "")
         worker = manager.get(run_id)
         for _ in range(100):
             if worker.link or worker.task.done():

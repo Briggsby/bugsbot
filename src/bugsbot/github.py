@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -116,6 +117,14 @@ class GitHub:
         return await self._paginate(f"/repos/{full_name}/issues",
                                     {"labels": label, "state": "open"}, max_pages=5)
 
+    async def branch_exists(self, full_name: str, branch: str) -> bool:
+        resp = await self._client.get(f"/repos/{full_name}/branches/{quote(branch, safe='')}")
+        if resp.status_code == 404:
+            return False
+        if resp.status_code >= 400:
+            raise GitHubError(f"GET branch {branch} -> {resp.status_code}: {resp.text[:500]}")
+        return True
+
     async def issue(self, full_name: str, number: int) -> dict[str, Any]:
         return await self._req("GET", f"/repos/{full_name}/issues/{number}")
 
@@ -164,6 +173,11 @@ class GitHub:
         prs = await self._req("GET", f"/repos/{full_name}/pulls",
                               params={"head": f"{owner}:{head_branch}", "state": "open"})
         return prs[0] if prs else None
+
+    async def create_branch(self, full_name: str, branch: str, from_branch: str) -> None:
+        """Create `branch` on GitHub at the tip of `from_branch`."""
+        sha = (await self._req("GET", f"/repos/{full_name}/git/ref/heads/{quote(from_branch, safe='/')}"))["object"]["sha"]
+        await self._req("POST", f"/repos/{full_name}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
 
     async def add_labels(self, full_name: str, number: int, labels: list[str]) -> None:
         if labels:
