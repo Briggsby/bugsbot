@@ -70,7 +70,7 @@ All optional:
 
 | Variable | Example | |
 |---|---|---|
-| `BUGSBOT_DOMAIN` | `bugsbot.example.com` | Serve the UI over HTTPS here (Caddy + Let's Encrypt). Without it, the UI is reachable only through an SSH tunnel |
+| `BUGSBOT_DOMAIN` | `bugsbot.example.com` | Serve the UI over HTTPS here (Caddy + Let's Encrypt). If unset, the deploy uses the server's free [sslip.io](https://sslip.io) name, e.g. `203-0-113-7.sslip.io`. Set it to `none` for no public URL (SSH tunnel only) |
 | `BUGSBOT_OAUTH_CLIENT_ID` | `Ov23li...` | GitHub OAuth App client ID |
 | `BUGSBOT_ALLOWED_USERS` | `Briggsby,alice` | Who can sign in to the web UI |
 | `BUGSBOT_ALLOWED_ORGS` | `macrocosmos` | Members of these orgs can sign in |
@@ -84,15 +84,16 @@ All optional:
 | `DEPLOY_KNOWN_HOSTS` | | The server's SSH host key; the first deploy prints what to put here |
 
 **GitHub OAuth App** (Settings → Developer settings → OAuth Apps → New): use
-`https://<BUGSBOT_DOMAIN>/` as the homepage and
-`https://<BUGSBOT_DOMAIN>/auth/github/callback` as the callback URL.
+`https://<domain>/` as the homepage and `https://<domain>/auth/github/callback` as the callback
+URL. `<domain>` is `BUGSBOT_DOMAIN`, or the sslip.io name the deploy summary shows.
 
 ### 4. Deploy
 
-Run **Actions → Deploy → Run workflow**. The log prints the server's IP. Then:
+Run **Actions → Deploy → Run workflow**. The run's summary page shows the server's IP and the
+web UI's URL. Then:
 
-1. **DNS:** if you set `BUGSBOT_DOMAIN`, point its A record at that IP. Caddy fetches a
-   certificate once DNS resolves.
+1. **DNS:** with the default sslip.io name there's nothing to do. If you set your own
+   `BUGSBOT_DOMAIN`, point its A record at the IP; Caddy fetches a certificate once DNS resolves.
 2. **Host key:** set `DEPLOY_KNOWN_HOSTS` to the lines the log prints. Later deploys will then
    refuse to connect if the server's key changes.
 3. **Sign Claude Code in.** This one step has to be done by hand, once:

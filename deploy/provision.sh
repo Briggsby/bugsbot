@@ -3,7 +3,8 @@
 #
 # Expects the bugsbot source in $APP_DIR (the deploy workflow rsyncs it there) and reads its
 # inputs from the environment, all optional:
-#   BUGSBOT_DOMAIN           serve the UI over HTTPS at this domain via Caddy (else localhost only)
+#   BUGSBOT_DOMAIN           serve the UI over HTTPS at this domain via Caddy (else localhost only;
+#                            the deploy workflow defaults it to the server's sslip.io name)
 #   BUGSBOT_GITHUB_TOKEN     `gh auth login` for the bugsbot user (bugsbot uses `gh auth token`)
 #   ANTHROPIC_API_KEY        bugsbot's Anthropic API key setting
 #   BUGSBOT_OAUTH_CLIENT_ID / BUGSBOT_OAUTH_CLIENT_SECRET / BUGSBOT_ALLOWED_USERS /
@@ -190,6 +191,9 @@ $BUGSBOT_DOMAIN {
 EOF
   systemctl enable -q caddy
   systemctl reload-or-restart caddy
+elif systemctl is-enabled -q caddy 2>/dev/null; then
+  log "no domain set; turning off Caddy"
+  systemctl disable -q --now caddy
 fi
 
 systemctl daemon-reload

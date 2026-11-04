@@ -75,10 +75,29 @@ jobs:
 
       - name: Ensure the Hetzner server exists
         if: steps.config.outputs.enabled == 'true'
+        env:
+          DOMAIN: ${{ vars.BUGSBOT_DOMAIN }}
         run: |
           ip=$(deploy/hetzner.sh)
           printf '  HostName %s\n' "$ip" >>~/.ssh/config
-          echo "Server IP: $ip"
+          # Without a domain, use the free sslip.io name for the IP (203-0-113-7.sslip.io resolves
+          # to 203.0.113.7), so Caddy can still get an HTTPS certificate. "none" = no public URL.
+          case "$DOMAIN" in
+            "") DOMAIN="${ip//./-}.sslip.io" ;;
+            none) DOMAIN="" ;;
+          esac
+          echo "BUGSBOT_DOMAIN=$DOMAIN" >>"$GITHUB_ENV"
+          {
+            echo "### bugsbot"
+            echo "- Server IP: \`$ip\`"
+            if [ -n "$DOMAIN" ]; then
+              echo "- Web UI: https://$DOMAIN/"
+              echo "- GitHub OAuth callback URL: \`https://$DOMAIN/auth/github/callback\`"
+            else
+              echo "- Web UI: SSH tunnel only (\`ssh -L 8765:127.0.0.1:8765 root@$ip\`)"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "Server IP: $ip; web UI: ${DOMAIN:+https://$DOMAIN/}"
 
       - name: Wait for the server
         if: steps.config.outputs.enabled == 'true'
@@ -103,7 +122,6 @@ jobs:
       - name: Provision
         if: steps.config.outputs.enabled == 'true'
         env:
-          BUGSBOT_DOMAIN: ${{ vars.BUGSBOT_DOMAIN }}
           BUGSBOT_REPOS: ${{ vars.BUGSBOT_REPOS }}
           BUGSBOT_LABELS: ${{ vars.BUGSBOT_LABELS }}
           BUGSBOT_OAUTH_CLIENT_ID: ${{ vars.BUGSBOT_OAUTH_CLIENT_ID }}
