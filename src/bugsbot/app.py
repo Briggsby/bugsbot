@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import html
 import re
+import subprocess
 from contextlib import asynccontextmanager
 from importlib import resources
 from pathlib import Path
@@ -352,10 +353,15 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     @app.post("/api/workers")
     async def open_worker(repo: str = Body(""), branch: str = Body(""), name: str = Body("")) -> dict[str, int]:
-        repo = repo.strip()
+        repo, branch = repo.strip(), branch.strip()
         if repo and repo not in store.repos():
             raise HTTPException(400, "repo must be one of the tracked repositories")
-        return {"run_id": workers.open(repo, branch.strip(), name)}
+        if branch and not repo:
+            raise HTTPException(400, "a branch needs a repository")
+        if branch and subprocess.run(["git", "check-ref-format", "--branch", branch],
+                                     capture_output=True).returncode != 0:
+            raise HTTPException(400, f"'{branch}' isn't a valid git branch name")
+        return {"run_id": workers.open(repo, branch, name)}
 
     @app.post("/api/workers/{run_id}/stop")
     async def stop_worker(run_id: int) -> dict[str, bool]:

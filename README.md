@@ -88,6 +88,9 @@ start-up output and duration, and can stop it.
 - The host must be logged in to Claude Code (`claude` then `/login`) with a Claude subscription
   account. The worker appears in **that account's** Claude app, and only that account can open it.
   Usage counts against that subscription, so bugsbot doesn't know the worker's cost.
+- **Branch** is optional. An existing branch is checked out; a new name is created from the default
+  branch. If it's blank, the worker starts on the default branch (which it can't push to) and
+  creates a branch named for the task once you've told it what to do.
 - bugsbot accepts Claude Code's "trust this folder?" prompt for the worker's own checkout.
 - The worker gets bugsbot's rules through project-local Claude Code config in the checkout,
   hidden from git: the no-merge/no-push hook, the signed `push_branch`/`open_pull_request`/

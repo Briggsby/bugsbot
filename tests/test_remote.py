@@ -127,3 +127,59 @@ def test_worker_api_requires_tracked_repo(tmp_path):
     assert r.status_code == 400
     assert c.post("/api/workers/999/stop", headers={"X-Bugsbot": "1"}).status_code == 404
     assert c.post("/api/chats", json={}, headers={"X-Bugsbot": "1"}).status_code == 404
+
+
+class _FakeRepoGH:
+    def __init__(self, token):
+        self.token = token
+    async def repo(self, name):
+        return {"default_branch": "trunk"}
+    async def close(self):
+        pass
+
+
+def _bare_worker(tmp_path, repo="o/r", branch="", label=""):
+    w = remote.RemoteWorker.__new__(remote.RemoteWorker)
+    w.store, w.home, w.run_id = Store(tmp_path), tmp_path, 5
+    w.repo, w.branch, w.name, w.label, w.default_branch = repo, branch, "bugsbot-5", label, ""
+    return w
+
+
+@pytest.mark.parametrize("branch,expected_checkout", [("feature/new-thing", "feature/new-thing"), ("", "trunk")])
+def test_worker_checkout_branch(tmp_path, monkeypatch, branch, expected_checkout):
+    prepared = []
+
+    async def fake_prepare(self, branch, base, name, email, pr_number=None):
+        prepared.append((branch, base))
+    monkeypatch.setattr(remote, "GitHub", _FakeRepoGH)
+    monkeypatch.setattr(remote, "resolve_token", lambda t: "tok")
+    monkeypatch.setattr(remote.Workspace, "prepare", fake_prepare)
+    w = _bare_worker(tmp_path, branch=branch, label="flaky tests")
+    asyncio.run(w._prepare_cwd())
+    assert prepared == [(expected_checkout, "trunk")]
+    rules = w.branch_rules()
+    if branch:
+        assert f"`{branch}`" in rules and "already checked out" in rules
+    else:
+        assert "start on `trunk`" in rules and "git checkout -b" in rules and '"flaky tests"' in rules
+
+
+def test_worker_refuses_protected_branch(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote, "GitHub", _FakeRepoGH)
+    monkeypatch.setattr(remote, "resolve_token", lambda t: "tok")
+    with pytest.raises(ValueError, match="protected"):
+        asyncio.run(_bare_worker(tmp_path, branch="trunk")._prepare_cwd())
+
+
+def test_scratch_worker_has_no_branch_rules(tmp_path):
+    assert _bare_worker(tmp_path, repo="").branch_rules() == ""
+
+
+def test_worker_api_validates_branch(tmp_path):
+    app = create_app(tmp_path)
+    Store(tmp_path).add_repo("o/r")
+    c = TestClient(app)
+    c.get(f"/auth/link?t={app.state.auth.mint_login_link()}")
+    h = {"X-Bugsbot": "1"}
+    assert "valid git branch" in c.post("/api/workers", json={"repo": "o/r", "branch": "bad..name"}, headers=h).json()["detail"]
+    assert "needs a repository" in c.post("/api/workers", json={"branch": "x"}, headers=h).json()["detail"]

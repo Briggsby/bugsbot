@@ -124,12 +124,14 @@
       <ul class="small muted" style="margin:0 0 12px; padding-left:18px">
         <li>It appears in the Claude account that's logged in to Claude Code <b>on the bugsbot host</b>, and only that account can open it.
           That account needs a Claude subscription, and usage counts against it. bugsbot tracks the worker's duration but not its cost.</li>
-        <li>It works in a fresh checkout of the repository you pick, or in an empty scratch folder.</li>
+        <li>It works in a fresh checkout of the repository you pick, or in an empty scratch folder.
+          For <b>Branch</b>, name an existing branch to continue it, or a new name to create it from the default branch.
+          Leave it blank and the agent creates a branch named for the task once you tell it what to do.</li>
         <li>Like bugsbot's other agents, it can push branches, open PRs and comment (all signed) but can never merge.</li>
       </ul>
       <div class="form">
         <label for="worker-repo">Repository</label><select id="worker-repo"></select>
-        <label for="worker-branch">Branch (optional)</label><input type="text" id="worker-branch" placeholder="existing branch to check out, or blank for a new bugsbot/worker-N branch">
+        <label for="worker-branch">Branch (optional)</label><input type="text" id="worker-branch" placeholder="existing branch, or a new name to create; blank lets the agent name one for the task">
         <label for="worker-name">Name (optional)</label><input type="text" id="worker-name" placeholder="shown in the Claude app, e.g. fix-flaky-tests">
       </div>
       <div class="row" style="margin-top:12px"><button class="btn primary" onclick="openWorker()">Start remote worker</button></div>

@@ -63,9 +63,12 @@ def find_session_link(cwd: Path, since: float) -> str | None:
 
 
 class RemoteWorker:
-    def __init__(self, store: Store, home: Path, run_id: int, repo: str, branch: str, name: str):
+    def __init__(self, store: Store, home: Path, run_id: int, repo: str, branch: str, name: str,
+                 label: str = ""):
         self.store, self.home, self.run_id = store, home, run_id
         self.repo, self.branch, self.name = repo, branch, name
+        self.label = label  # the name the maintainer typed, if any
+        self.default_branch = ""
         self.link: str | None = None
         self.proc: asyncio.subprocess.Process | None = None
         self._seen: set[str] = set()
@@ -90,13 +93,29 @@ class RemoteWorker:
         gh = GitHub(resolve_token(settings["github_token"]))
         try:
             default_branch = (await gh.repo(self.repo))["default_branch"]
-            branch = self.branch or f"bugsbot/worker-{self.run_id}"
+            if self.branch in (default_branch, "main", "master"):
+                raise ValueError(f"'{self.branch}' is protected; name a feature branch or leave it blank")
             ws = Workspace(self.home, self.repo, "worker", self.run_id, gh.token)
+            # A named branch is checked out if it exists on GitHub, otherwise created from the
+            # default branch. With no name the worker starts on the default branch and creates
+            # its own branch once it knows what the task is (see branch_rules).
+            branch = self.branch or default_branch
             self.log("info", f"Preparing checkout of {self.repo} on branch {branch}")
             await ws.prepare(branch, default_branch, settings["git_author_name"], settings["git_author_email"])
+            self.default_branch = default_branch
             return ws.path
         finally:
             await gh.close()
+
+    def branch_rules(self) -> str:
+        if not self.repo:
+            return ""
+        if self.branch:
+            return f"\nWork on the branch `{self.branch}`, which is already checked out.\n"
+        hint = f" The worker was named \"{self.label}\", which may describe the task." if self.label else ""
+        return (f"\nYou start on `{self.default_branch}`, which you can't push to. Before committing, create a "
+                f"branch named for the task, e.g. `git checkout -b bugsbot/<short-kebab-case-topic>`, based on "
+                f"what the maintainer asks.{hint} Tell them the branch name you chose.\n")
 
     def _env(self) -> dict[str, str]:
         settings = self.store.settings()
@@ -139,7 +158,7 @@ class RemoteWorker:
             if not claude:
                 raise RuntimeError("the `claude` CLI is not installed on this host")
             cwd = await self._prepare_cwd()
-            guardrails.install(cwd, self.home, self.run_id, self.repo or None, WORKER_RULES)
+            guardrails.install(cwd, self.home, self.run_id, self.repo or None, WORKER_RULES + self.branch_rules())
 
             master, slave = os.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 160, 0, 0))
@@ -228,7 +247,7 @@ class WorkerManager:
         label = name.strip() or (repo.split("/")[-1] if repo else "scratch")
         run_id = self.store.start_worker(repo, f"worker: {label}")
         session_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"bugsbot-{run_id}-{label}")[:60]
-        worker = RemoteWorker(self.store, self.home, run_id, repo, branch, session_name)
+        worker = RemoteWorker(self.store, self.home, run_id, repo, branch, session_name, name.strip())
         worker.task.add_done_callback(lambda _: self.workers.pop(run_id, None))
         self.workers[run_id] = worker
         return run_id
