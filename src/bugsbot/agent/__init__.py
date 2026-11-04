@@ -5,7 +5,8 @@ Code, Cursor) lives in bugsbot.providers.
 - `tools`: the signed GitHub/git tools agents use for all writes.
 - `toolspec`: which tools a run gets, serialisable for tool servers in another process.
 - `mcp_stdio`: those tools as a stdio MCP server, for agents bugsbot doesn't run in-process.
-- `hook`: the command check as a hook command, in each provider's input/output format.
+- `hook`: the command agents' shell-command hooks run; routes each provider's hook format
+  to its ShellHook (bugsbot.providers.<provider>.hook).
 - `prompts`: task prompts for issues and pull requests.
 - `run`: one autonomous run for one issue or PR, on the configured provider.
 """

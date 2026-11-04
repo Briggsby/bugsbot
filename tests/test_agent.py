@@ -7,9 +7,11 @@ from bugsbot.agent.prompts import issue_prompt, pr_prompt
 from bugsbot.agent.run import AgentRun, RunContext
 from bugsbot.agent.tools import REPLIED, ToolKit
 from bugsbot.agent.toolspec import ToolSpec, build_tools
-from bugsbot.providers import PROVIDERS
+from bugsbot import providers
 from bugsbot.providers.base import AgentOutcome
-from bugsbot.providers.claude.agent import outcome as claude_outcome
+from bugsbot.providers.claude.agent import ClaudeAgent
+
+claude_outcome = ClaudeAgent.outcome
 from bugsbot.github import is_bugsbot, replied_keys
 from bugsbot.store import Store
 from bugsbot.work import PendingComment, Work
@@ -145,7 +147,7 @@ def _run(tmp_path, kind, pending_keys, replied, provider="claude"):
     run_id = store.start_run(item, "x", "k")
     for key in replied:
         store.add_event(run_id, REPLIED, key)
-    return AgentRun(RunContext(store, None, tmp_path, run_id, item, work, []), PROVIDERS[provider])
+    return AgentRun(RunContext(store, None, tmp_path, run_id, item, work, []), providers.get(provider))
 
 
 def _result(is_error=False):

@@ -69,7 +69,7 @@ class AgentRun:
         )
         minutes = int(self.settings["max_minutes_per_run"])
         try:
-            outcome = await asyncio.wait_for(self.provider.run_agent(job), timeout=minutes * 60 or None)
+            outcome = await asyncio.wait_for(self.provider.agent(job).run(), timeout=minutes * 60 or None)
         except asyncio.TimeoutError:
             outcome = AgentOutcome(ok=False, error=f"timed out after {minutes} minutes (Max minutes per run)")
         return self._outcome(outcome)

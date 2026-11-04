@@ -28,7 +28,7 @@ class WorkerManager:
 
     def recover(self) -> None:
         """At start-up, before runs are marked interrupted: clean up, and resume workers that outlived bugsbot."""
-        for provider in providers.PROVIDERS.values():
+        for provider in providers.all().values():
             for worker in provider.recover_workers(self.store, self.home):
                 self._track(worker.run_id, provider.name, worker)
 

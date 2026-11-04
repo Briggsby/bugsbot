@@ -84,11 +84,11 @@ def test_guardrails_without_repo_has_no_tools(tmp_path):
     assert "enabledMcpjsonServers" not in json.loads((tmp_path / ".claude/settings.local.json").read_text())
 
 
-def _hook(tmp_path, command, fmt="claude"):
+def _hook(tmp_path, command, fmt="claude", flag="--provider"):
     payload = {"command": command, "cwd": "/w"} if fmt == "cursor" else {"tool_name": "Bash",
                                                                          "tool_input": {"command": command}}
     proc = subprocess.run([sys.executable, "-m", "bugsbot.agent.hook", "--home", str(tmp_path), "--run-id", "3",
-                           "--format", fmt], input=json.dumps(payload), capture_output=True, text=True, check=True)
+                           flag, fmt], input=json.dumps(payload), capture_output=True, text=True, check=True)
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
@@ -103,6 +103,15 @@ def test_command_hook_cursor_format(tmp_path):
     out = _hook(tmp_path, "git push origin main", "cursor")
     assert out["permission"] == "deny" and "push_branch" in out["agent_message"]
     assert _hook(tmp_path, "ls -la", "cursor") == {"permission": "allow"}  # Cursor needs an explicit answer
+    # Hooks installed before the flag was renamed still work.
+    assert _hook(tmp_path, "gh pr merge 1", "cursor", flag="--format")["permission"] == "deny"
+
+
+def test_hook_does_not_import_provider_sdks():
+    code = ("import sys, bugsbot.agent.hook as h; h.load('claude'); h.load('cursor'); "
+            "print([m for m in sys.modules if m.startswith(('claude_agent_sdk', 'httpx'))])")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "[]"
 
 
 def test_find_session_link(tmp_path, monkeypatch):

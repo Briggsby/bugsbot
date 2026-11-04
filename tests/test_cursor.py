@@ -67,7 +67,7 @@ def test_guardrails_install(tmp_path):
     hooks = json.loads((cwd / ".cursor/hooks.json").read_text())
     shell = hooks["hooks"]["beforeShellExecution"]
     assert hooks["version"] == 1 and len(shell) == 1
-    assert "--run-id 2" in shell[0]["command"] and "--format cursor" in shell[0]["command"]
+    assert "--run-id 2" in shell[0]["command"] and "--provider cursor" in shell[0]["command"]
     status = subprocess.run(["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True).stdout
     assert status == ""  # hidden from the agent's commits
 
@@ -75,7 +75,7 @@ def test_guardrails_install(tmp_path):
 def test_cli_run(tmp_path, monkeypatch):
     _install_fake_cursor(tmp_path, monkeypatch)
     job = _job(tmp_path)
-    out = asyncio.run(agent.run_agent(job))
+    out = asyncio.run(agent.CursorAgent(job).run())
     assert out.ok and out.result == "All done." and out.cost_usd is None
     seen = json.load(open(tmp_path / "args.json"))
     argv = seen["argv"]
@@ -93,7 +93,7 @@ def test_cli_run(tmp_path, monkeypatch):
 def test_cli_run_failure_and_long_prompt(tmp_path, monkeypatch):
     _install_fake_cursor(tmp_path, monkeypatch, mode="fail")
     job = _job(tmp_path, prompt="x" * (agent.MAX_PROMPT_ARG + 1))
-    out = asyncio.run(agent.run_agent(job))
+    out = asyncio.run(agent.CursorAgent(job).run())
     assert not out.ok and "not authenticated" in out.error
     argv = json.load(open(tmp_path / "args.json"))["argv"]
     assert "runs/1/prompt.md" in argv[-1] and (job.home / "runs/1/prompt.md").read_text().endswith("x")
@@ -101,7 +101,7 @@ def test_cli_run_failure_and_long_prompt(tmp_path, monkeypatch):
 
 def test_cli_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "find_cli", lambda: None)
-    out = asyncio.run(agent.run_agent(_job(tmp_path)))
+    out = asyncio.run(agent.CursorAgent(_job(tmp_path)).run())
     assert not out.ok and "isn't installed" in out.error
 
 

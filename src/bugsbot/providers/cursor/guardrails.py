@@ -47,7 +47,7 @@ def install(cwd: Path, home: Path, run_id: int, tool_spec: Path) -> None:
     shell_hooks = hooks.setdefault("hooks", {}).setdefault("beforeShellExecution", [])
     # The checkout is reused across runs: replace the previous run's hook rather than adding another.
     shell_hooks[:] = [h for h in shell_hooks if HOOK_MODULE not in h.get("command", "")]
-    shell_hooks.append({"command": shlex.join([py, "-m", HOOK_MODULE, *common, "--format", "cursor"])})
+    shell_hooks.append({"command": shlex.join([py, "-m", HOOK_MODULE, *common, "--provider", "cursor"])})
     hooks_path.write_text(json.dumps(hooks, indent=2) + "\n")
 
     hide_from_git(cwd, FILES)

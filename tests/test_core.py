@@ -8,7 +8,8 @@ from bugsbot.auth import LINK_USER, Auth
 from bugsbot.github import MARKER, is_bugsbot, replied_keys, sign
 from bugsbot.store import DEFAULT_SIGNATURE, Store
 from bugsbot.authors import association_policy
-from bugsbot.providers.claude.agent import make_guard
+from bugsbot.providers.base import AgentJob
+from bugsbot.providers.claude.agent import ClaudeAgent
 from bugsbot.work import issue_work, pr_work
 
 TRUSTED, ANYONE = association_policy(True), association_policy(False)
@@ -95,8 +96,11 @@ def test_pr_work_respects_reply_markers():
 ])
 def test_guard(cmd, blocked):
     events = []
-    out = asyncio.run(make_guard(lambda t, x: events.append(t))({"tool_input": {"command": cmd}}, None, None))
+    job = AgentJob(store=None, home=None, run_id=1, cwd=None, prompt="", rules="", tools=[], tool_spec=None,
+                   log=lambda t, x: events.append(t))
+    out = asyncio.run(ClaudeAgent(job).guard({"tool_input": {"command": cmd}}, None, None))
     assert (out.get("hookSpecificOutput", {}).get("permissionDecision") == "deny") is blocked
+    assert (events == ["blocked"]) is blocked
 
 
 # -- auth ----------------------------------------------------------------------------

@@ -206,7 +206,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
             "workers": workers.describe(),
             "providers": [{"name": p.name, "label": p.label, "worker_label": p.worker_label,
                            "worker_needs_repo": p.worker_needs_repo, "worker_needs_task": p.worker_needs_task}
-                          for p in providers.PROVIDERS.values()],
+                          for p in providers.all().values()],
             "home": str(home),
         }
 
@@ -225,11 +225,11 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
                 clean[key] = type(default)(value) if not isinstance(default, bool) else bool(value)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"invalid value for {key}")
-        if "agent_provider" in clean and clean["agent_provider"] not in providers.PROVIDERS:
+        if "agent_provider" in clean and clean["agent_provider"] not in providers.all():
             raise HTTPException(400, f"unknown agent provider {clean['agent_provider']!r}")
         # Check API keys being saved (and the Anthropic key when the model it must work with changes).
         merged = {**store.settings(), **clean}
-        for provider in providers.PROVIDERS.values():
+        for provider in providers.all().values():
             key = provider.credential_setting
             if key in clean or (key == "anthropic_api_key" and "model" in clean and merged[key]):
                 store_view = _Overlay(store, clean)
@@ -261,7 +261,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
     def credential_checks() -> dict[str, Any]:
         """Settings key -> async check(value) for every credential on the Credentials card."""
         checks: dict[str, Any] = {p.credential_setting: (lambda v, p=p: p.check_credential(store, v))
-                                  for p in providers.PROVIDERS.values()}
+                                  for p in providers.all().values()}
         checks["github_token"] = check_github
         return checks
 
@@ -395,9 +395,9 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
     # -- remote workers --------------------------------------------------------
 
     def worker_provider(name: str):
-        if name not in providers.PROVIDERS:
+        if name not in providers.all():
             raise HTTPException(400, f"unknown provider {name!r}")
-        return providers.PROVIDERS[name]
+        return providers.all()[name]
 
     @app.get("/api/workers/account")
     async def worker_account(provider: str = "claude") -> dict[str, Any]:

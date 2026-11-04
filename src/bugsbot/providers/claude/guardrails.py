@@ -38,7 +38,7 @@ def install(cwd: Path, home: Path, run_id: int, tool_spec: Path | None, extra_ru
     settings_path = cwd / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings = _load(settings_path)
-    hook_cmd = shlex.join([py, "-m", "bugsbot.agent.hook", *common, "--format", "claude"])
+    hook_cmd = shlex.join([py, "-m", "bugsbot.agent.hook", *common, "--provider", "claude"])
     hooks = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
     if not any(h.get("hooks", [{}])[0].get("command") == hook_cmd for h in hooks):
         hooks.append({"matcher": "Bash", "hooks": [{"type": "command", "command": hook_cmd}]})
