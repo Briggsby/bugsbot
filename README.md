@@ -91,6 +91,10 @@ start-up output and duration, and can stop it.
 - **Branch** is optional. An existing branch is checked out; a new name is created from the default
   branch. If it's blank, the worker starts on the default branch (which it can't push to) and
   creates a branch named for the task once you've told it what to do.
+- **"Enable Remote Control?"** is answered for you. Before starting a worker, bugsbot sets
+  Claude Code's `remoteDialogSeen` flag in `~/.claude.json`, which is internal to Claude Code and
+  not a public setting. If the question appears anyway, bugsbot answers yes and logs which key it
+  pressed. This is the only prompt bugsbot answers.
 - **Folder trust:** Claude Code asks whether to trust each new folder, and trust isn't inherited
   from parent folders. Each worker gets a fresh checkout under `~/.bugsbot/workers/`, so just before
   starting a worker bugsbot records trust for that one folder in Claude Code's config

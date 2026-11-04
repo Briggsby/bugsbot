@@ -4,7 +4,8 @@ import os
 import pytest
 
 from bugsbot import claude_trust
-from bugsbot.claude_trust import TrustError, trust_folder, untrust_all_inside, untrust_folder
+from bugsbot.claude_trust import (TrustError, mark_remote_control_enabled, trust_folder, untrust_all_inside,
+                                  untrust_folder)
 
 
 @pytest.fixture
@@ -78,3 +79,10 @@ def test_untrust_all_inside_clears_only_leftovers(tmp_path, cfg):
         trust_folder(root / name, root)
     assert untrust_all_inside(root) == 2
     assert json.loads(cfg.read_text())["projects"] == {"/elsewhere": {"hasTrustDialogAccepted": True}}
+
+
+def test_mark_remote_control_enabled(cfg):
+    assert mark_remote_control_enabled() is True
+    data = json.loads(cfg.read_text())
+    assert data["remoteDialogSeen"] is True and data["numStartups"] == 7
+    assert mark_remote_control_enabled() is False  # already set: no write

@@ -1,4 +1,6 @@
-"""Record Claude Code folder trust for remote worker checkouts.
+"""The few Claude Code config entries bugsbot manages for remote workers.
+
+Folder trust:
 
 Claude Code asks "do you trust this folder?" the first time it starts in a folder, and
 trust is per folder (it isn't inherited from parents). Each remote worker gets a fresh
@@ -93,6 +95,25 @@ def untrust_all_inside(root: Path) -> int:
     for key in stale:
         _update(Path(key), root, trusted=False)
     return len(stale)
+
+
+def mark_remote_control_enabled() -> bool:
+    """Set Claude Code's `remoteDialogSeen` flag, the one-time "enable Remote Control?" consent.
+
+    That flag is internal to Claude Code, so this is best effort: remote workers also answer
+    the question if it still appears. Returns True if the flag had to be set.
+    """
+    path = claude_config_file()
+    for attempt in range(ATTEMPTS):
+        config = _read(path)
+        if config.get("remoteDialogSeen") is True:
+            return attempt > 0
+        config["remoteDialogSeen"] = True
+        _write_atomic(path, config)
+        time.sleep(0.05 * (attempt + 1))
+    if _read(path).get("remoteDialogSeen") is True:
+        return True
+    raise TrustError(f"couldn't set remoteDialogSeen: another process kept rewriting {path}")
 
 
 def trust_folder(folder: Path, root: Path) -> None:

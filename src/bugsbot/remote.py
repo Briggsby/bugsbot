@@ -34,7 +34,8 @@ from pathlib import Path
 
 from bugsbot.agent import guardrails
 from bugsbot.anthropic_check import needs_login
-from bugsbot.claude_trust import TrustError, trust_folder, untrust_all_inside, untrust_folder
+from bugsbot.claude_trust import (TrustError, mark_remote_control_enabled, trust_folder, untrust_all_inside,
+                                  untrust_folder)
 from bugsbot.github import GitHub, resolve_token
 from bugsbot.store import Store
 from bugsbot.workspace import Workspace, agent_env, git
@@ -42,6 +43,10 @@ from bugsbot.workspace import Workspace, agent_env, git
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]")
 LINK_RE = re.compile(r"https://claude\.ai/code/[A-Za-z0-9_/?=&.-]+")
 TRUST_RE = re.compile(r"trust", re.I)
+# The one-time "Enable Remote Control?" consent, which the maintainer has approved bugsbot answering.
+ENABLE_RC_RE = re.compile(r"enable\s*remote\s*control", re.I)
+YES_OPTION_RE = re.compile(r"(\d)\s*[.)]\s*(yes|enable)", re.I)
+YES_NO_RE = re.compile(r"\(\s*y\s*/\s*n\s*\)|\[\s*y\s*/\s*n\s*\]", re.I)
 TRUST_CONTEXT_RE = re.compile(r"folder|files|directory|project", re.I)
 MAX_LOG_LINES = 400
 STARTUP_TIMEOUT = 180  # seconds for a worker's session to connect
@@ -121,6 +126,7 @@ class RemoteWorker:
         self._startup_text = ""
         self._login_warned = False
         self.untrusted = False
+        self._rc_answered = False
         self.cwd: Path | None = None
         self._stop_reason = "stopped from bugsbot"
         self.task = asyncio.create_task(self._main())
@@ -173,6 +179,8 @@ class RemoteWorker:
         text = ANSI_RE.sub("", data.decode(errors="replace"))
         # Prompts can arrive split across reads, so look at all start-up text so far.
         self._startup_text = (self._startup_text + text)[-4000:]
+        if not self._rc_answered and ENABLE_RC_RE.search(self._startup_text):
+            self._answer_enable_prompt(master)
         if (not self.untrusted and TRUST_RE.search(self._startup_text)
                 and TRUST_CONTEXT_RE.search(self._startup_text)):
             # bugsbot never answers prompts itself. Trust is recorded before start, so this means the
@@ -194,6 +202,19 @@ class RemoteWorker:
                 self._seen.add(line)
                 self.log("terminal", line)
 
+    def _answer_enable_prompt(self, master: int) -> None:
+        """Say yes to "Enable Remote Control?" once its options are on screen."""
+        option = YES_OPTION_RE.search(self._startup_text)
+        if option:
+            key, how = option.group(1).encode(), f"chose option {option.group(1)} ({option.group(2)})"
+        elif YES_NO_RE.search(self._startup_text):
+            key, how = b"y", "pressed y"
+        else:
+            return  # options not drawn yet; try again on the next output
+        self._rc_answered = True
+        os.write(master, key)
+        self.log("info", f"Answered Claude Code's \"Enable Remote Control?\" prompt: {how}")
+
     def _set_link(self, link: str) -> None:
         self.link = link
         self.store.set_run_summary(self.run_id, link)
@@ -211,6 +232,8 @@ class RemoteWorker:
             cwd = await self._prepare_cwd()
             guardrails.install(cwd, self.home, self.run_id, self.repo or None, WORKER_RULES + self.branch_rules())
             trust_folder(cwd, workers_root(self.home))
+            if mark_remote_control_enabled():
+                self.log("info", "Marked Remote Control as enabled in Claude Code's config")
             self.cwd = cwd
             self.log("info", f"Recorded Claude Code folder trust for {cwd}")
 

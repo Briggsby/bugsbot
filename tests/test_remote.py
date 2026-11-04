@@ -28,6 +28,22 @@ if os.environ.get("FAKE_MODE") == "untrusted":
     sys.stdout.write("folder?\r\n> 1. Yes, proceed\r\n"); sys.stdout.flush()  # split across reads
     sys.stdin.readline()
     time.sleep(60)
+mode = os.environ.get("FAKE_MODE", "")
+if mode.startswith("enable-"):
+    import tty
+    tty.setraw(0)  # like Claude Code: single keypresses, no Enter needed
+    if mode == "enable-menu":
+        sys.stdout.write("\x1b[1mEnable Remote Control?\x1b[0m\r\n"); sys.stdout.flush()
+        time.sleep(0.2)  # options drawn separately
+        sys.stdout.write("\x1b[36m\u276f 1. Yes, enable\x1b[0m\r\n  2. No\r\n"); sys.stdout.flush()
+        expected = "1"
+    else:
+        sys.stdout.write("Enable Remote Control for this account? (y/n) "); sys.stdout.flush()
+        expected = "y"
+    got = sys.stdin.read(1)
+    open(os.environ["FAKE_ARGS"] + ".key", "w").write(got)
+    if got != expected:
+        sys.exit(3)
 sys.stdout.write("\x1b[1mRemote Control\x1b[0m starting\r\n"); sys.stdout.flush()
 if os.environ.get("FAKE_MODE") == "never-connect":
     time.sleep(60)
@@ -286,3 +302,31 @@ def test_untrusted_worker_fails_fast_without_answering(tmp_path, monkeypatch):
     assert run["status"] == "failed" and "asked to trust" in run["error"]
     errors = [e["text"] for e in store.events(run_id) if e["type"] == "error"]
     assert any("Start the worker again" in e for e in errors)
+
+
+@pytest.mark.parametrize("mode,key,how", [("enable-menu", "1", "chose option 1"), ("enable-yn", "y", "pressed y")])
+def test_worker_answers_enable_remote_control(tmp_path, monkeypatch, mode, key, how):
+    _install_fake_claude(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_ARGS", str(tmp_path / "args.json"))
+    monkeypatch.setenv("FAKE_MODE", mode)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+
+    async def scenario():
+        store = Store(tmp_path / "home")
+        manager = remote.WorkerManager(store, tmp_path / "home")
+        run_id = manager.open("", "", "")
+        worker = manager.get(run_id)
+        for _ in range(100):
+            if worker.link or worker.task.done():
+                break
+            await asyncio.sleep(0.1)
+        assert worker.link, [e["text"] for e in store.events(run_id)]
+        worker.stop()
+        await asyncio.gather(worker.task, return_exceptions=True)
+        return store, run_id
+
+    store, run_id = asyncio.run(scenario())
+    assert (tmp_path / "args.json.key").read_text() == key
+    assert any(how in e["text"] for e in store.events(run_id))
+    config = json.loads((tmp_path / "claude-home/.claude.json").read_text())
+    assert config["remoteDialogSeen"] is True
