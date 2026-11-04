@@ -121,6 +121,10 @@
       <p style="margin-top:0">A remote worker is a <b>Claude Code Remote Control</b> session running on the bugsbot host.
         You don't chat with it here. Open it in the <b>Claude app</b> (<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a>,
         or the Claude desktop or mobile app) and talk to it there, as you would any Claude Code session.</p>
+      <div class="row" style="margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:6px">
+        <span>Claude account on this host:</span> <b id="claude-account" class="cred-status none" style="margin:0">checking…</b>
+        <button class="btn small" onclick="checkClaudeAccount()">Re-check</button>
+      </div>
       <ul class="small muted" style="margin:0 0 12px; padding-left:18px">
         <li>It appears in the Claude account that's logged in to Claude Code <b>on the bugsbot host</b>, and only that account can open it.
           That account needs a Claude subscription, and usage counts against it. bugsbot tracks the worker's duration but not its cost.</li>
@@ -134,7 +138,7 @@
         <label for="worker-branch">Branch (optional)</label><input type="text" id="worker-branch" placeholder="existing branch, or a new name to create; blank lets the agent name one for the task">
         <label for="worker-name">Name (optional)</label><input type="text" id="worker-name" placeholder="shown in the Claude app, e.g. fix-flaky-tests">
       </div>
-      <div class="row" style="margin-top:12px"><button class="btn primary" onclick="openWorker()">Start remote worker</button></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="start-worker" onclick="openWorker()">Start remote worker</button></div>
     </div>
     <div class="card"><h2>Remote workers</h2><div class="table-wrap" id="workers-table"></div></div>
   </section>
@@ -277,6 +281,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("main section").forEach(s => s.classList.toggle("active", s.id === b.dataset.tab));
   try { localStorage.setItem("bugsbot-tab", b.dataset.tab); } catch {}
   if (b.dataset.tab === "settings") checkCredentials().catch(() => {});
+  if (b.dataset.tab === "workers") checkClaudeAccount().catch(() => {});
   refresh();
 });
 try { const t = localStorage.getItem("bugsbot-tab"); if (t) document.querySelector(`[data-tab="${t}"]`)?.click(); } catch {}
@@ -410,6 +415,14 @@ async function loadRun(id, scroll) {
   }
   if (scroll || atBottom) log.scrollTop = log.scrollHeight;
   if (scroll) $("run-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+async function checkClaudeAccount() {
+  const el = $("claude-account"); el.className = "cred-status none"; el.textContent = "checking…";
+  const a = await api("GET", "/api/workers/account");
+  const who = [a.email, a.orgName && `(${a.orgName}${a.subscriptionType ? ", " + a.subscriptionType : ""})`].filter(Boolean).join(" ");
+  el.className = "cred-status " + (a.ok ? "ok" : "bad");
+  el.textContent = a.ok ? `✓ ${who}` : `✗ ${a.detail}${who ? " — " + who : ""}. Run \`claude\` then /login as the OS user running bugsbot.`;
+  $("start-worker").disabled = !a.ok;
 }
 async function openWorker() {
   const { run_id } = await api("POST", "/api/workers", { repo: $("worker-repo").value, branch: $("worker-branch").value, name: $("worker-name").value });

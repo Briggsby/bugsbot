@@ -62,6 +62,38 @@ def find_session_link(cwd: Path, since: float) -> str | None:
     return None
 
 
+def worker_env(store: Store, home: Path) -> dict[str, str]:
+    settings = store.settings()
+    env = {**os.environ, **agent_env(home, settings["git_author_name"], settings["git_author_email"])}
+    # Remote Control uses the host's claude.ai login; an API key would override it.
+    for key in ("ANTHROPIC_API_KEY", "CLAUDECODE"):
+        env.pop(key, None)
+    env.setdefault("TERM", "xterm-256color")
+    return env
+
+
+async def claude_account(store: Store, home: Path) -> dict[str, object]:
+    """Who Claude Code on this host is logged in as, from `claude auth status --json`."""
+    claude = shutil.which("claude")
+    if not claude:
+        return {"ok": False, "detail": "the `claude` CLI isn't installed on this host"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            claude, "auth", "status", "--json", env=worker_env(store, home),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        status = json.loads(out)
+    except (OSError, ValueError, asyncio.TimeoutError) as e:
+        return {"ok": False, "detail": f"couldn't read Claude Code's login status: {e}"}
+    info = {k: status.get(k) for k in ("loggedIn", "authMethod", "email", "orgName", "subscriptionType")}
+    if not status.get("loggedIn"):
+        return {**info, "ok": False, "detail": "not logged in"}
+    if status.get("authMethod") != "claude.ai":
+        return {**info, "ok": False,
+                "detail": f"logged in via {status.get('authMethod')}, but Remote Control needs a Claude account"}
+    return {**info, "ok": True, "detail": "ready"}
+
+
 class RemoteWorker:
     def __init__(self, store: Store, home: Path, run_id: int, repo: str, branch: str, name: str,
                  label: str = ""):
@@ -117,15 +149,6 @@ class RemoteWorker:
                 f"branch named for the task, e.g. `git checkout -b bugsbot/<short-kebab-case-topic>`, based on "
                 f"what the maintainer asks.{hint} Tell them the branch name you chose.\n")
 
-    def _env(self) -> dict[str, str]:
-        settings = self.store.settings()
-        env = {**os.environ, **agent_env(self.home, settings["git_author_name"], settings["git_author_email"])}
-        # Remote Control uses the host's claude.ai login; an API key would override it.
-        for key in ("ANTHROPIC_API_KEY", "CLAUDECODE"):
-            env.pop(key, None)
-        env.setdefault("TERM", "xterm-256color")
-        return env
-
     def _on_output(self, master: int, data: bytes) -> None:
         text = ANSI_RE.sub("", data.decode(errors="replace"))
         if not self._trust_answered and TRUST_RE.search(text):
@@ -168,7 +191,7 @@ class RemoteWorker:
             started = time.time()
             self.log("info", f"$ {' '.join(cmd[1:])}  (in {cwd})")
             self.proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=cwd, env=self._env(), stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+                *cmd, cwd=cwd, env=worker_env(self.store, self.home), stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
             os.close(slave)
             self.store.set_run_pid(self.run_id, self.proc.pid)
 

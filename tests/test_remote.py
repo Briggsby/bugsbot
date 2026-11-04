@@ -16,6 +16,9 @@ from bugsbot.store import Store
 
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
 import os, sys, time, json
+if sys.argv[1:3] == ["auth", "status"]:
+    assert "ANTHROPIC_API_KEY" not in os.environ
+    print(os.environ.get("FAKE_AUTH", "{}")); sys.exit(0)
 assert sys.stdin.isatty() and sys.stdout.isatty(), "needs a terminal"
 assert "ANTHROPIC_API_KEY" not in os.environ
 json.dump(sys.argv[1:], open(os.environ["FAKE_ARGS"], "w"))
@@ -183,3 +186,45 @@ def test_worker_api_validates_branch(tmp_path):
     h = {"X-Bugsbot": "1"}
     assert "valid git branch" in c.post("/api/workers", json={"repo": "o/r", "branch": "bad..name"}, headers=h).json()["detail"]
     assert "needs a repository" in c.post("/api/workers", json={"branch": "x"}, headers=h).json()["detail"]
+
+
+def _install_fake_claude(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "claude"
+    fake.write_text(FAKE_CLAUDE)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+@pytest.mark.parametrize("status,ok,detail", [
+    ({"loggedIn": True, "authMethod": "claude.ai", "email": "a@b.co", "orgName": "Acme", "subscriptionType": "max"},
+     True, "ready"),
+    ({"loggedIn": False}, False, "not logged in"),
+    ({"loggedIn": True, "authMethod": "api_key"}, False, "needs a Claude account"),
+])
+def test_claude_account(tmp_path, monkeypatch, status, ok, detail):
+    _install_fake_claude(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_AUTH", json.dumps(status))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-removed")
+    out = asyncio.run(remote.claude_account(Store(tmp_path / "home"), tmp_path / "home"))
+    assert out["ok"] is ok and detail in out["detail"]
+    if ok:
+        assert (out["email"], out["orgName"], out["subscriptionType"]) == ("a@b.co", "Acme", "max")
+
+
+def test_claude_account_without_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote.shutil, "which", lambda name: None)
+    out = asyncio.run(remote.claude_account(Store(tmp_path), tmp_path))
+    assert out["ok"] is False and "isn't installed" in out["detail"]
+
+
+def test_worker_start_refused_when_not_logged_in(tmp_path, monkeypatch):
+    async def logged_out(store, home):
+        return {"ok": False, "detail": "not logged in"}
+    monkeypatch.setattr("bugsbot.app.claude_account", logged_out)
+    app = create_app(tmp_path)
+    c = TestClient(app)
+    c.get(f"/auth/link?t={app.state.auth.mint_login_link()}")
+    r = c.post("/api/workers", json={}, headers={"X-Bugsbot": "1"})
+    assert r.status_code == 400 and "/login" in r.json()["detail"]
