@@ -10,7 +10,7 @@ The first run creates the server; after that, each run updates it in place. On e
    SSH key and a firewall (inbound 22, 80 and 443 only). It never deletes or rebuilds the server,
    because bugsbot's state lives on its disk.
 2. **Upload.** Uploads the commit to `/opt/bugsbot/app` and runs `deploy/provision.sh` as root, which:
-   - installs git, the GitHub CLI, uv, Python, Claude Code and (with a domain) Caddy;
+   - installs git, the GitHub CLI, uv, Python, Claude Code, the Cursor CLI and (with a domain) Caddy;
    - adds 2 GB of swap and turns off SSH password login;
    - creates a `bugsbot` user to run the harness and its agents. The app's code and virtualenv
      are root-owned, so agents can't modify the harness.
@@ -47,6 +47,7 @@ can read repo-level secrets; environment secrets limited to `main` can't be read
 | `DEPLOY_SSH_KEY` | yes | A private key for the deploy job (see below) |
 | `BUGSBOT_GITHUB_TOKEN` | recommended | Token bugsbot uses for GitHub (see below) |
 | `ANTHROPIC_API_KEY` | optional | Anthropic API key for agent runs. Without it, agent runs use Claude Code's login |
+| `CURSOR_API_KEY` | optional | Cursor API key, for Cursor agent runs and Cursor Cloud Agent workers. To run issues and PRs on Cursor, also set `BUGSBOT_SETTINGS_JSON` to `{"agent_provider": "cursor"}` |
 | `BUGSBOT_OAUTH_CLIENT_SECRET` | optional | GitHub OAuth App secret for signing in to the web UI |
 
 Make the deploy key with:

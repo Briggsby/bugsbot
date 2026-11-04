@@ -7,6 +7,7 @@
 #                            the deploy workflow defaults it to the server's sslip.io name)
 #   BUGSBOT_GITHUB_TOKEN     `gh auth login` for the bugsbot user (bugsbot uses `gh auth token`)
 #   ANTHROPIC_API_KEY        bugsbot's Anthropic API key setting
+#   CURSOR_API_KEY           bugsbot's Cursor API key setting (Cursor CLI runs and Cloud Agent workers)
 #   BUGSBOT_OAUTH_CLIENT_ID / BUGSBOT_OAUTH_CLIENT_SECRET / BUGSBOT_ALLOWED_USERS /
 #   BUGSBOT_ALLOWED_ORGS     GitHub sign-in for the web UI
 #   BUGSBOT_REPOS / BUGSBOT_LABELS   comma-separated; added to what's tracked (never removed)
@@ -101,6 +102,13 @@ else
   as_user bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null
 fi
 
+log "installing the Cursor CLI for $USER_NAME"
+if as_user bash -c 'command -v cursor-agent' >/dev/null; then
+  as_user cursor-agent update >/dev/null 2>&1 || true
+else
+  as_user bash -c 'curl -fsS https://cursor.com/install | bash' >/dev/null
+fi
+
 # The app (code and virtualenv) is root-owned, so the agents, which run as the bugsbot user,
 # can't modify the harness itself.
 log "installing bugsbot from $APP_DIR"
@@ -143,6 +151,7 @@ extra="${BUGSBOT_SETTINGS_JSON:-}"
 csv_json() { jq -cn --arg s "${1:-}" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))'; }
 config=$(jq -n \
   --arg api_key "${ANTHROPIC_API_KEY:-}" \
+  --arg cursor_key "${CURSOR_API_KEY:-}" \
   --arg client_id "${BUGSBOT_OAUTH_CLIENT_ID:-}" \
   --arg client_secret "${BUGSBOT_OAUTH_CLIENT_SECRET:-}" \
   --arg users "${BUGSBOT_ALLOWED_USERS:-}" \
@@ -150,7 +159,7 @@ config=$(jq -n \
   --argjson extra "$extra" \
   --argjson repos "$(csv_json "${BUGSBOT_REPOS:-}")" \
   --argjson labels "$(csv_json "${BUGSBOT_LABELS:-}")" '
-  {settings: (({anthropic_api_key: $api_key, github_oauth_client_id: $client_id,
+  {settings: (({anthropic_api_key: $api_key, cursor_api_key: $cursor_key, github_oauth_client_id: $client_id,
                 github_oauth_client_secret: $client_secret, oauth_allowed_users: $users,
                 oauth_allowed_orgs: $orgs} | with_entries(select(.value != ""))) + $extra),
    repos: $repos, labels: $labels}')
