@@ -132,6 +132,9 @@
           For <b>Branch</b>, name an existing branch to continue it, or a new name to create it from the default branch.
           Leave it blank and the agent creates a branch named for the task once you tell it what to do.</li>
         <li>Like bugsbot's other agents, it can push branches, open PRs and comment (all signed) but can never merge.</li>
+        <li><b>bugsbot starts and stops workers, but doesn't control them.</b> Once a worker connects, only that Claude account
+          talks to it, from the Claude app: chatting, approvals, ending the session. bugsbot doesn't record the conversation.
+          You can stop a worker here at any time, and bugsbot also stops one that fails to connect within 3 minutes.</li>
       </ul>
       <div class="form">
         <label for="worker-repo">Repository</label><select id="worker-repo"></select>
@@ -399,7 +402,7 @@ async function loadRun(id, scroll) {
     $("worker-link").style.display = live.link ? "" : "none";
     if (live.link) $("worker-link").href = live.link;
     $("worker-hint").textContent = live.link
-      ? `Also listed in the Claude app's Code section as "${live.name}".`
+      ? `Controlled from the Claude app, where it's listed in the Code section as "${live.name}".`
       : `Starting… once connected it appears in the Claude app's Code section as "${live.name}" (the log below shows progress).`;
   }
   $("run-meta").textContent = `Trigger: ${run.trigger}\nStarted ${when(run.started_at)} · duration ${dur(run.duration_seconds)} · turns ${run.num_turns ?? "—"} · cost ${run.cost_usd != null ? "$" + run.cost_usd.toFixed(3) : "—"}` +
@@ -424,14 +427,14 @@ async function checkClaudeAccount() {
   el.textContent = a.ok ? `✓ ${who}` : `✗ ${a.detail}${who ? " — " + who : ""}. Run \`claude\` then /login as the OS user running bugsbot.`;
   $("start-worker").disabled = !a.ok;
 }
+async function stopWorker() {
+  if (!openRunId || !confirm("Stop this remote worker? Its Claude app session will disconnect.")) return;
+  await api("POST", `/api/workers/${openRunId}/stop`); toast("Stopping worker"); refresh();
+}
 async function openWorker() {
   const { run_id } = await api("POST", "/api/workers", { repo: $("worker-repo").value, branch: $("worker-branch").value, name: $("worker-name").value });
   $("worker-branch").value = ""; $("worker-name").value = "";
   toast("Starting remote worker…"); await refresh(); openRun(run_id);
-}
-async function stopWorker() {
-  if (!openRunId || !confirm("Stop this remote worker? Its Claude app session will disconnect.")) return;
-  await api("POST", `/api/workers/${openRunId}/stop`); toast("Stopping worker"); refresh();
 }
 async function newToken() {
   if (!confirm("Generate a new API token? Any existing token stops working.")) return;

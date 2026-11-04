@@ -6,8 +6,14 @@ as the Claude account logged in on this host. bugsbot starts and stops it, insta
 the same rules and signed tools as its other agents, and records it as a run of kind
 'worker' so its duration shows next to the issue/PR runs.
 
+bugsbot starts and stops workers but doesn't control them. Once a worker's session is
+connected, the Claude account drives it from the Claude app: bugsbot sends it no input and
+stops recording its terminal, so the conversation never reaches bugsbot's UI. A worker ends
+when its session ends in the app, when someone stops it from bugsbot, when it fails to
+connect within STARTUP_TIMEOUT, or when bugsbot shuts down.
+
 Remote Control needs a real terminal, so the process runs on a pseudo-terminal. Its
-screen output is logged (ANSI stripped) so start-up problems are visible in the UI.
+start-up output is logged (ANSI stripped) so start-up problems are visible in the UI.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\
 LINK_RE = re.compile(r"https://claude\.ai/code/[A-Za-z0-9_/?=&.-]+")
 TRUST_RE = re.compile(r"trust.{0,40}(folder|files|directory)", re.I | re.S)
 MAX_LOG_LINES = 400
+STARTUP_TIMEOUT = 180  # seconds for a worker's session to connect
 
 WORKER_RULES = """
 You are a Remote Control worker started from the bugsbot web UI. A maintainer chats with
@@ -106,12 +113,14 @@ class RemoteWorker:
         self._seen: set[str] = set()
         self._trust_answered = False
         self._login_warned = False
+        self._stop_reason = "stopped from bugsbot"
         self.task = asyncio.create_task(self._main())
 
     def log(self, type_: str, text: str) -> None:
         self.store.add_event(self.run_id, type_, text)
 
-    def stop(self) -> None:
+    def stop(self, reason: str = "stopped from bugsbot") -> None:
+        self._stop_reason = reason
         self.task.cancel()
 
     async def _prepare_cwd(self) -> Path:
@@ -150,6 +159,8 @@ class RemoteWorker:
                 f"what the maintainer asks.{hint} Tell them the branch name you chose.\n")
 
     def _on_output(self, master: int, data: bytes) -> None:
+        if self.link:
+            return  # connected: the session belongs to the Claude app now; output is drained, not kept
         text = ANSI_RE.sub("", data.decode(errors="replace"))
         if not self._trust_answered and TRUST_RE.search(text):
             # Only ever our own freshly prepared checkout; accept the default "trust" option.
@@ -173,6 +184,8 @@ class RemoteWorker:
         self.link = link
         self.store.set_run_summary(self.run_id, link)
         self.log("tool_ok", f"Remote Control session ready: {link}")
+        self.log("info", "Connected. From here on the worker is controlled from the Claude app; "
+                         "bugsbot no longer records its activity (it can still stop it).")
 
     async def _main(self) -> None:
         status, error = "succeeded", ""
@@ -212,6 +225,9 @@ class RemoteWorker:
             while self.proc.returncode is None:
                 if not self.link and (link := find_session_link(cwd, started)):
                     self._set_link(link)
+                if not self.link and time.time() - started > STARTUP_TIMEOUT:
+                    raise TimeoutError(f"the session didn't connect within {STARTUP_TIMEOUT}s "
+                                       "(see the terminal output above)")
                 try:
                     await asyncio.wait_for(self.proc.wait(), timeout=2)
                 except asyncio.TimeoutError:
@@ -219,7 +235,7 @@ class RemoteWorker:
             if self.proc.returncode != 0:
                 status, error = "failed", f"remote-control exited with status {self.proc.returncode}"
         except asyncio.CancelledError:
-            status, error = "cancelled", "worker stopped"
+            status, error = "cancelled", self._stop_reason
         except Exception as e:
             status, error = "failed", f"{type(e).__name__}: {e}"
             self.log("error", traceback.format_exc())
@@ -281,5 +297,5 @@ class WorkerManager:
 
     async def stop(self) -> None:
         for w in list(self.workers.values()):
-            w.stop()
+            w.stop("bugsbot shut down")
         await asyncio.gather(*(w.task for w in self.workers.values()), return_exceptions=True)

@@ -24,7 +24,11 @@ assert "ANTHROPIC_API_KEY" not in os.environ
 json.dump(sys.argv[1:], open(os.environ["FAKE_ARGS"], "w"))
 sys.stdout.write("\x1b[1mDo you trust the files in this folder?\x1b[0m\r\n> 1. Yes, proceed\r\n"); sys.stdout.flush()
 sys.stdin.readline()
+if os.environ.get("FAKE_MODE") == "never-connect":
+    time.sleep(60)
 sys.stdout.write("Remote Control active: https://claude.ai/code/session_01FAKE\r\n"); sys.stdout.flush()
+time.sleep(0.5)
+sys.stdout.write("user: PRIVATE CHAT MESSAGE\r\n"); sys.stdout.flush()
 time.sleep(60)
 """
 
@@ -106,6 +110,7 @@ def test_worker_lifecycle_with_fake_claude(tmp_path, monkeypatch):
         assert worker.link == "https://claude.ai/code/session_01FAKE"
         assert worker.name == f"bugsbot-{run_id}-my-task"
         assert store.run(run_id)["worker_pid"] == worker.proc.pid
+        await asyncio.sleep(1.5)  # let the post-connect output arrive
         worker.stop()
         await asyncio.wait_for(asyncio.gather(worker.task, return_exceptions=True), timeout=10)
         assert worker.proc.returncode is not None and run_id not in manager.workers
@@ -114,12 +119,15 @@ def test_worker_lifecycle_with_fake_claude(tmp_path, monkeypatch):
     store, run_id = asyncio.run(scenario())
     run = store.run(run_id)
     assert (run["status"], run["kind"], run["summary"]) == ("cancelled", "worker", "https://claude.ai/code/session_01FAKE")
+    assert run["error"] == "stopped from bugsbot"
     args = json.load(open(tmp_path / "args.json"))
     assert args[:3] == ["remote-control", "--spawn", "session"] and "bypassPermissions" in args
     events = [e["type"] + ":" + e["text"] for e in store.events(run_id)]
     assert any("Accepted the folder trust prompt" in e for e in events)
     assert any(e.startswith("terminal:Do you trust the files") for e in events)  # ANSI stripped
     assert (tmp_path / "home/workers" / f"worker-{run_id}" / "CLAUDE.local.md").exists()
+    assert not any("PRIVATE CHAT MESSAGE" in e for e in events)  # nothing recorded once connected
+    assert any("controlled from the Claude app" in e for e in events)
 
 
 def test_worker_api_requires_tracked_repo(tmp_path):
@@ -228,3 +236,23 @@ def test_worker_start_refused_when_not_logged_in(tmp_path, monkeypatch):
     c.get(f"/auth/link?t={app.state.auth.mint_login_link()}")
     r = c.post("/api/workers", json={}, headers={"X-Bugsbot": "1"})
     assert r.status_code == 400 and "/login" in r.json()["detail"]
+
+
+def test_worker_that_never_connects_times_out(tmp_path, monkeypatch):
+    _install_fake_claude(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_ARGS", str(tmp_path / "args.json"))
+    monkeypatch.setenv("FAKE_MODE", "never-connect")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    monkeypatch.setattr(remote, "STARTUP_TIMEOUT", 1)
+
+    async def scenario():
+        store = Store(tmp_path / "home")
+        manager = remote.WorkerManager(store, tmp_path / "home")
+        run_id = manager.open("", "", "")
+        worker = manager.get(run_id)
+        await asyncio.wait_for(asyncio.gather(worker.task, return_exceptions=True), timeout=15)
+        assert worker.proc.returncode is not None  # process was terminated
+        return store.run(run_id)
+
+    run = asyncio.run(scenario())
+    assert run["status"] == "failed" and "didn't connect" in run["error"]
