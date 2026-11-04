@@ -102,9 +102,13 @@ repo. It only takes a closer look at items whose `updated_at` changed:
 - A `PreToolUse` hook blocks `gh pr merge`, `/merge` API calls, `git push`, and `gh pr|issue`
   write commands.
 - The GitHub client has no merge method.
-- Issue and comment text is treated as untrusted input, and web search/fetch tools are disabled.
-  Agents still run arbitrary code in their checkout on the host, so run bugsbot on a machine or
-  container you're comfortable giving that access to.
+- Issue and comment text is treated as untrusted input. Agents can search and fetch the web for
+  research, and their shell has normal network access. They run arbitrary code in their checkout
+  on the host, and the Anthropic API key (if set) is in their environment. So run bugsbot on a
+  machine or container you're comfortable giving that access to. The defences against prompt
+  injection are who can trigger work: only labelled items, and by default only trusted
+  commenters.
+- Web searches are billed per search on top of tokens.
 - Each run is capped by max turns and a USD budget (configurable).
 
 ## Development

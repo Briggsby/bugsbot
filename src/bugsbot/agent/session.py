@@ -40,7 +40,6 @@ def build_options(settings: dict[str, Any], home: Path, cwd: Path, system_append
         max_turns=max_turns,
         max_budget_usd=float(settings["max_budget_usd_per_run"]) or None,
         mcp_servers={"bugsbot": create_sdk_mcp_server("bugsbot", tools=tools)},
-        disallowed_tools=["WebSearch", "WebFetch"],
         hooks={"PreToolUse": [HookMatcher(matcher="Bash", hooks=[make_guard(log)])]},
         env=env,
         stderr=lambda line: log("stderr", line),
