@@ -146,6 +146,7 @@ def test_login_link_single_use(tmp_path):
     auth.ensure_password()
     t = auth.mint_login_link()
     c = TestClient(app)
-    assert c.get(f"/auth/link?t={t}", follow_redirects=False).headers["location"] == "/"
-    assert c.get("/api/state").status_code == 200
+    r = c.get(f"/auth/link?t={t}", follow_redirects=False)
+    assert r.status_code == 200 and 'location.replace("/")' in r.text
+    assert c.get("/api/state").json()["viewer"] == "admin"
     assert TestClient(app).get(f"/auth/link?t={t}", follow_redirects=False).headers["location"] == "/login"

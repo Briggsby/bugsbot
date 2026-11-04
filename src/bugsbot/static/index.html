@@ -86,6 +86,7 @@
   <div class="status" id="status">Loading…</div>
   <label class="row small"><input type="checkbox" id="polling"> Polling enabled</label>
   <button class="btn" onclick="api('POST','/api/poll').then(()=>toast('Polling now'))">Poll now</button>
+  <span class="small muted" id="viewer"></span>
   <button class="btn" onclick="api('POST','/api/logout').then(()=>location.href='/login')">Sign out</button>
 </header>
 <nav id="tabs">
@@ -182,6 +183,25 @@
       <div class="row" style="margin-top:14px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div>
     </div>
     <div class="card">
+      <h2>GitHub sign-in</h2>
+      <p class="muted small" style="margin-top:0">Create an OAuth App at <a href="https://github.com/settings/developers" target="_blank" rel="noopener">GitHub → Settings → Developer settings → OAuth Apps</a>
+        (or under your organisation) with this <b>Authorization callback URL</b>:</p>
+      <pre class="small" id="oauth-callback" style="background:var(--code);padding:8px;border-radius:6px;overflow-x:auto"></pre>
+      <div class="form">
+        <label for="github_oauth_client_id">Client ID</label><input type="text" id="github_oauth_client_id" autocomplete="off">
+        <label for="github_oauth_client_secret">Client secret</label>
+        <div class="row"><input type="password" id="github_oauth_client_secret" autocomplete="off">
+          <button class="btn danger" onclick="clearSecret('github_oauth_client_secret')">Clear</button></div>
+        <label for="oauth_allowed_users">Allowed GitHub users</label><input type="text" id="oauth_allowed_users" placeholder="comma-separated logins, e.g. alice, bob">
+        <label for="oauth_allowed_orgs">Allowed organisations</label><input type="text" id="oauth_allowed_orgs" placeholder="comma-separated; any active member may sign in">
+        <label for="oauth_allow_repo_collaborators">Allow anyone with write access to a tracked repo</label><input type="checkbox" id="oauth_allow_repo_collaborators">
+        <label for="password_login_enabled">Allow admin-password sign-in</label><input type="checkbox" id="password_login_enabled">
+      </div>
+      <p class="muted small">Nobody can sign in with GitHub unless they match one of the rules above. GitHub sessions last 24 hours.
+        If you lock yourself out, run <code>bugsbot set-password</code> on the server to re-enable password sign-in.</p>
+      <div class="row"><button class="btn primary" onclick="saveSettings()">Save settings</button></div>
+    </div>
+    <div class="card">
       <h2>Access</h2>
       <div class="form">
         <label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password">
@@ -193,6 +213,7 @@
       <div class="row"><span>API token: <b id="api-token-state"></b></span>
         <button class="btn" onclick="newToken()">Generate new token</button>
         <button class="btn danger" onclick="revokeToken()">Revoke</button></div>
+      <div class="row" style="margin-top:12px"><button class="btn danger" onclick="signOutAll()">Sign out all other sessions</button></div>
       <p class="muted small">Use as <code>Authorization: Bearer &lt;token&gt;</code> (plus header <code>X-Bugsbot: 1</code> on writes) for scripted access.</p>
       <pre id="api-token" class="small" style="display:none; white-space:pre-wrap; word-break:break-all"></pre>
     </div>
@@ -220,7 +241,10 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const FIELDS = ["model","effort","poll_interval_seconds","max_concurrent_agents","max_turns_per_run",
-                "max_budget_usd_per_run","trusted_commenters_only","git_author_name","git_author_email","signature"];
+                "max_budget_usd_per_run","trusted_commenters_only","git_author_name","git_author_email","signature",
+                "github_oauth_client_id","oauth_allowed_users","oauth_allowed_orgs","oauth_allow_repo_collaborators",
+                "password_login_enabled"];
+const SECRETS = ["anthropic_api_key", "github_token", "github_oauth_client_secret"];
 let state = null, openRunId = null, lastEventId = 0, settingsLoaded = false;
 
 async function api(method, path, body) {
@@ -264,6 +288,9 @@ async function refresh() {
     `${st.running}/${s.max_concurrent_agents} agents running`,
   ].join(" · ");
   $("home").textContent = state.home;
+  $("viewer").textContent = state.viewer === "admin" ? "signed in with password" : `signed in as ${state.viewer}`;
+  $("oauth-callback").textContent = state.oauth_callback_url;
+  $("github_oauth_client_secret").placeholder = s.has_github_oauth_client_secret ? "•••••••• (stored)" : "not set";
 
   const totalCost = runs.reduce((a, r) => a + (r.cost_usd || 0), 0);
   const finished = runs.filter(r => r.ended_at);
@@ -375,6 +402,8 @@ async function newToken() {
   const { token } = await api("POST", "/api/auth/token");
   $("api-token").style.display = ""; $("api-token").textContent = token + "\n\nCopy it now — it will not be shown again."; refresh();
 }
+async function signOutAll() { if (!confirm("Sign out every other browser and session?")) return;
+  await api("POST", "/api/auth/signout-all"); toast("All other sessions signed out"); }
 async function revokeToken() { await api("DELETE", "/api/auth/token"); $("api-token").style.display = "none"; toast("API token revoked"); refresh(); }
 
 async function addRepo() { const v = $("repo-input").value.trim(); if (!v) return;
@@ -394,9 +423,9 @@ async function clearSecret(k) { await api("DELETE", `/api/secrets/${k}`); toast(
 async function saveSettings() {
   const body = {};
   for (const f of FIELDS) { const el = $(f); body[f] = el.type === "checkbox" ? el.checked : (el.type === "number" ? Number(el.value) : el.value); }
-  for (const k of ["anthropic_api_key", "github_token"]) if ($(k).value) body[k] = $(k).value;
+  for (const k of SECRETS) if ($(k).value) body[k] = $(k).value;
   await api("PUT", "/api/settings", body);
-  $("anthropic_api_key").value = ""; $("github_token").value = "";
+  for (const k of SECRETS) $(k).value = "";
   toast("Settings saved"); refresh();
 }
 $("repo-input").addEventListener("keydown", e => e.key === "Enter" && addRepo());

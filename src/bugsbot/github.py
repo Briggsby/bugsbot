@@ -127,6 +127,10 @@ class GitHub:
         data = await self.graphql(PR_QUERY, {"owner": owner, "name": name, "number": number})
         return data["repository"]["pullRequest"]
 
+    async def collaborator_permission(self, full_name: str, login: str) -> str:
+        data = await self._req("GET", f"/repos/{full_name}/collaborators/{login}/permission")
+        return data.get("permission", "none")
+
     # -- writes (all text is signed by the caller via `sign`) ------------------
 
     async def create_comment(self, full_name: str, number: int, body: str) -> dict[str, Any]:

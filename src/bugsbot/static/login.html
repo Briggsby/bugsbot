@@ -17,6 +17,10 @@
   input { width: 100%; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
           border-radius: 6px; padding: 9px 10px; margin-bottom: 12px; }
   button { width: 100%; font: inherit; padding: 9px; border-radius: 6px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  .gh { display: flex; align-items: center; justify-content: center; gap: 8px; background: #24292f; color: #fff;
+        text-decoration: none; border-radius: 6px; padding: 9px; margin-bottom: 14px; }
+  .or { text-align: center; color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+  [hidden] { display: none !important; }
   #err { color: var(--bad); min-height: 1.4em; margin-top: 10px; font-size: 13px; }
 </style>
 </head>
@@ -24,11 +28,24 @@
 <form id="f">
   <h1>🐛 bugsbot</h1>
   <p>Sign in to manage the agent harness.</p>
-  <input type="password" id="pw" placeholder="Password" autocomplete="current-password" autofocus required>
-  <button type="submit">Sign in</button>
+  <a class="gh" id="gh" href="/auth/github" hidden>
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    Sign in with GitHub</a>
+  <div class="or" id="or" hidden>or use the admin password</div>
+  <div id="pwbox" hidden>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password">
+    <button type="submit">Sign in</button>
+  </div>
   <div id="err"></div>
 </form>
 <script>
+fetch("/api/auth/options").then(r => r.json()).then(o => {
+  document.getElementById("gh").hidden = !o.github;
+  document.getElementById("pwbox").hidden = !o.password;
+  document.getElementById("or").hidden = !(o.github && o.password);
+  if (o.password) document.getElementById("pw").focus();
+  if (!o.github && !o.password) document.getElementById("err").textContent = "No sign-in method is enabled. Run `bugsbot set-password` on the server.";
+});
 document.getElementById("f").onsubmit = async (e) => {
   e.preventDefault();
   const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json", "X-Bugsbot": "1" },

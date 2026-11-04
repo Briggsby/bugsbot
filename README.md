@@ -59,7 +59,14 @@ State (settings, repos, labels, tracked items, run history) lives in `~/.bugsbot
 
 Every page and API endpoint requires authentication:
 
-- Password sign-in, scrypt-hashed, with login attempts rate-limited per client.
+- **Sign in with GitHub** (recommended). Create an
+  [OAuth App](https://github.com/settings/developers) whose callback URL is
+  `<public-url>/auth/github/callback`; **Settings → GitHub sign-in** shows the exact URL. Enter the
+  client ID and secret there, then allow specific logins, members of organisations, and/or anyone
+  with write access to a tracked repo. Nobody is allowed by default. GitHub sessions last 24 hours.
+- Admin password sign-in, scrypt-hashed, with login attempts rate-limited per client. Once GitHub
+  sign-in works you can switch it off. `bugsbot set-password` on the server turns it back on if you
+  lock yourself out.
 - Signed `HttpOnly`, `SameSite=Strict` session cookies, marked `Secure` over HTTPS.
 - Optionally an API token for scripts: `Authorization: Bearer <token>`. Generate it under
   **Settings → Access**; it's stored hashed.

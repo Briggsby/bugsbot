@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hmac
+import html
 import re
 from contextlib import asynccontextmanager
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -15,9 +18,17 @@ from .auth import COOKIE, SESSION_TTL, Auth
 from .chat import ChatManager
 from .github import GitHubError
 from .harness import Harness
+from .oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
 from .store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
 
-PUBLIC_PATHS = {"/login", "/api/login", "/auth/link"}
+PUBLIC_PATHS = {"/login", "/api/login", "/auth/link", "/api/auth/options", "/auth/github", "/auth/github/callback"}
+
+# Navigating to "/" from a page we served makes the next request same-site, so the
+# SameSite=Strict session cookie is sent even when sign-in started on github.com.
+BOUNCE = '<!doctype html><meta charset="utf-8"><title>bugsbot</title><script>location.replace("/")</script>'
+ERROR_PAGE = ('<!doctype html><meta charset="utf-8"><title>bugsbot</title>'
+              '<body style="font-family:sans-serif;padding:40px"><h2>Sign-in failed</h2><p>{msg}</p>'
+              '<p><a href="/login">Back to sign-in</a></p></body>')
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -26,9 +37,10 @@ def _page(name: str) -> str:
     return resources.files("bugsbot").joinpath(f"static/{name}").read_text()
 
 
-def create_app(home: Path) -> FastAPI:
+def create_app(home: Path, public_url: str | None = None) -> FastAPI:
     store = Store(home)
     auth = Auth(store)
+    oauth = GitHubOAuth(store)
     harness = Harness(store, home)
     chats = ChatManager(store, home)
 
@@ -61,10 +73,17 @@ def create_app(home: Path) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def set_session(request: Request, response: Response) -> None:
-        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-        response.set_cookie(COOKIE, auth.new_session(), max_age=SESSION_TTL, httponly=True,
-                            secure=secure, samesite="strict")
+    def is_secure(request: Request) -> bool:
+        return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+    def set_session(request: Request, response: Response, user: str = "admin",
+                    ttl: int = SESSION_TTL) -> None:
+        response.set_cookie(COOKIE, auth.new_session(user, ttl), max_age=ttl, httponly=True,
+                            secure=is_secure(request), samesite="strict")
+
+    def callback_url(request: Request) -> str:
+        base = (public_url or str(request.base_url)).rstrip("/")
+        return f"{base}/auth/github/callback"
 
     # -- auth ------------------------------------------------------------------
 
@@ -72,8 +91,50 @@ def create_app(home: Path) -> FastAPI:
     async def login_page() -> str:
         return _page("login.html")
 
+    @app.get("/api/auth/options")
+    async def auth_options() -> dict[str, bool]:
+        return {"password": bool(store.get_setting("password_login_enabled")) and auth.has_password,
+                "github": oauth.configured}
+
+    @app.get("/auth/github")
+    async def github_login(request: Request) -> Response:
+        if not oauth.configured:
+            return HTMLResponse(ERROR_PAGE.format(msg="GitHub sign-in is not configured."), status_code=400)
+        url, state = oauth.authorize_url(callback_url(request))
+        response = RedirectResponse(url, status_code=303)
+        # Lax (not Strict) so the cookie comes back on the top-level redirect from github.com.
+        response.set_cookie(STATE_COOKIE, state, max_age=600, httponly=True, secure=is_secure(request),
+                            samesite="lax", path="/auth/github")
+        return response
+
+    @app.get("/auth/github/callback")
+    async def github_callback(request: Request, code: str = "", state: str = "", error: str = "") -> Response:
+        expected = request.cookies.get(STATE_COOKIE)
+        try:
+            if error:
+                raise OAuthError(error)
+            if not code or not expected or not hmac.compare_digest(state, expected):
+                raise OAuthError("invalid or expired sign-in attempt; please try again")
+            login = await oauth.complete(code, callback_url(request))
+        except (OAuthError, httpx.HTTPError) as e:
+            response: Response = HTMLResponse(ERROR_PAGE.format(msg=html.escape(str(e))), status_code=403)
+        else:
+            response = HTMLResponse(BOUNCE)
+            set_session(request, response, user=f"gh:{login}", ttl=GITHUB_SESSION_TTL)
+        response.delete_cookie(STATE_COOKIE, path="/auth/github")
+        return response
+
+    @app.post("/api/auth/signout-all")
+    async def signout_all(request: Request, response: Response) -> dict[str, bool]:
+        user = auth.session_user(request.cookies.get(COOKIE)) or "admin"
+        auth.sign_out_everyone()
+        set_session(request, response, user=user)  # keep the caller signed in
+        return {"ok": True}
+
     @app.post("/api/login")
     async def login(request: Request, response: Response, password: str = Body(..., embed=True)) -> dict[str, bool]:
+        if not store.get_setting("password_login_enabled"):
+            raise HTTPException(403, "password sign-in is disabled; use GitHub")
         client = request.client.host if request.client else "?"
         if auth.rate_limited(client):
             raise HTTPException(429, "too many failed attempts; try again in a few minutes")
@@ -86,7 +147,7 @@ def create_app(home: Path) -> FastAPI:
     async def login_link(request: Request, t: str = "") -> Response:
         if not auth.redeem_login_link(t):
             return RedirectResponse("/login", status_code=303)
-        response = RedirectResponse("/", status_code=303)
+        response = HTMLResponse(BOUNCE)
         set_session(request, response)
         return response
 
@@ -133,8 +194,11 @@ def create_app(home: Path) -> FastAPI:
         return s
 
     @app.get("/api/state")
-    async def state() -> dict[str, Any]:
+    async def state(request: Request) -> dict[str, Any]:
+        user = auth.session_user(request.cookies.get(COOKIE)) or "api-token"
         return {
+            "viewer": user.removeprefix("gh:"),
+            "oauth_callback_url": callback_url(request),
             "settings": public_settings(),
             "repos": store.repos(),
             "labels": store.labels(),
@@ -156,6 +220,10 @@ def create_app(home: Path) -> FastAPI:
                 clean[key] = type(default)(value) if not isinstance(default, bool) else bool(value)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"invalid value for {key}")
+        merged = {**store.settings(), **clean}
+        if not merged["password_login_enabled"] and not (
+                merged["github_oauth_client_id"] and merged["github_oauth_client_secret"]):
+            raise HTTPException(400, "configure GitHub sign-in before disabling password sign-in")
         store.update_settings(clean)
         if "github_token" in clean:
             harness.status["github_user"] = None

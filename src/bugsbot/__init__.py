@@ -27,10 +27,12 @@ def _set_password(home: Path) -> None:
     if password != getpass.getpass("Repeat: "):
         sys.exit("Passwords do not match.")
     try:
-        Auth(Store(home)).set_password(password)
+        store = Store(home)
+        Auth(store).set_password(password)
+        store.update_settings({"password_login_enabled": True})  # break-glass if GitHub sign-in breaks
     except ValueError as e:
         sys.exit(str(e))
-    print("Password updated; existing sessions have been signed out.")
+    print("Password updated and password sign-in enabled; existing sessions have been signed out.")
 
 
 def main() -> None:
@@ -63,7 +65,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    app = create_app(home)
+    app = create_app(home, public_url=args.public_url)
     auth = app.state.auth
     base = (args.public_url or f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{port}").rstrip("/")
     generated = auth.ensure_password()

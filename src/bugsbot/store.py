@@ -89,13 +89,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "git_author_name": "bugsbot",
     "git_author_email": "bugsbot@users.noreply.github.com",
     "signature": DEFAULT_SIGNATURE,
+    # Web UI sign-in
+    "password_login_enabled": True,
+    "github_oauth_client_id": "",
+    "github_oauth_client_secret": "",
+    "oauth_allowed_users": "",          # comma-separated GitHub logins
+    "oauth_allowed_orgs": "",           # comma-separated org logins
+    "oauth_allow_repo_collaborators": False,  # anyone with write access to a tracked repo
     # Internal: never returned by or settable through the settings API.
     "admin_password_hash": "",
     "session_secret": "",
     "api_token_hash": "",
 }
 
-SECRET_KEYS = {"anthropic_api_key", "github_token"}
+SECRET_KEYS = {"anthropic_api_key", "github_token", "github_oauth_client_secret"}
 INTERNAL_KEYS = {"admin_password_hash", "session_secret", "api_token_hash"}
 
 

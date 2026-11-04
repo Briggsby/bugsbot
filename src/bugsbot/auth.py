@@ -77,7 +77,7 @@ class Auth:
         return len(self._failures[client]) >= MAX_FAILURES
 
     def check_password(self, client: str, password: str) -> bool:
-        if self.rate_limited(client):
+        if self.rate_limited(client) or not self.has_password:
             return False
         if verify_password(password, self.store.get_setting("admin_password_hash")):
             self._failures.pop(client, None)
@@ -91,17 +91,25 @@ class Auth:
         key = self.store.get_setting("session_secret").encode()
         return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
 
-    def new_session(self) -> str:
-        payload = f"{int(time.time()) + SESSION_TTL}.{secrets.token_hex(8)}"
+    def new_session(self, user: str = "admin", ttl: int = SESSION_TTL) -> str:
+        """`user` is 'admin' for password sign-in or 'gh:<login>' for GitHub sign-in."""
+        payload = f"{int(time.time()) + ttl}.{secrets.token_hex(8)}.{user}"
         return f"{payload}.{self._sign(payload)}"
 
+    def session_user(self, cookie: str | None) -> str | None:
+        if not cookie or cookie.count(".") != 3:
+            return None
+        payload, sig = cookie.rsplit(".", 1)
+        if not hmac.compare_digest(sig, self._sign(payload)):
+            return None
+        expiry, _, user = payload.split(".")
+        return user if expiry.isdigit() and int(expiry) > time.time() else None
+
     def valid_session(self, cookie: str | None) -> bool:
-        if not cookie or cookie.count(".") != 2:
-            return False
-        expiry, nonce, sig = cookie.split(".")
-        if not hmac.compare_digest(sig, self._sign(f"{expiry}.{nonce}")):
-            return False
-        return expiry.isdigit() and int(expiry) > time.time()
+        return self.session_user(cookie) is not None
+
+    def sign_out_everyone(self) -> None:
+        self.store.update_settings({"session_secret": secrets.token_hex(32)})
 
     # -- API token ---------------------------------------------------------------
 
