@@ -63,6 +63,13 @@ class Workspace:
         self.token = token
         self.path = home / "workspaces" / repo.replace("/", "__") / f"{kind}-{number}"
 
+    @classmethod
+    def at(cls, path: Path, repo: str, token: str) -> "Workspace":
+        """A Workspace for an existing checkout at `path`."""
+        ws = cls.__new__(cls)
+        ws.repo, ws.token, ws.path = repo, token, path
+        return ws
+
     async def prepare(self, branch: str, base_branch: str, author_name: str, author_email: str,
                       pr_number: int | None = None) -> None:
         """Clone (or refresh) and check out `branch`, creating it from `base_branch` if new."""

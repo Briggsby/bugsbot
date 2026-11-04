@@ -45,10 +45,10 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER REFERENCES items(id),  -- NULL for ad-hoc chats
-    repo TEXT NOT NULL,                     -- '' for chats without a repo
-    number INTEGER NOT NULL,                -- 0 for chats
-    kind TEXT NOT NULL,                     -- 'issue' | 'pr' | 'chat'
+    item_id INTEGER REFERENCES items(id),  -- NULL for remote workers
+    repo TEXT NOT NULL,                     -- '' for workers without a repo
+    number INTEGER NOT NULL,                -- 0 for workers
+    kind TEXT NOT NULL,                     -- 'issue' | 'pr' | 'worker'
     trigger TEXT NOT NULL DEFAULT '',
     trigger_key TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'running', -- running|succeeded|failed|cancelled|interrupted
@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS runs (
     num_turns INTEGER,
     cost_usd REAL,
     summary TEXT NOT NULL DEFAULT '',
-    error TEXT NOT NULL DEFAULT ''
+    error TEXT NOT NULL DEFAULT '',
+    worker_pid INTEGER                      -- remote worker process, for cleanup after a crash
 );
 CREATE TABLE IF NOT EXISTS run_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +127,10 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        try:  # databases from before worker_pid existed
+            self._db.execute("ALTER TABLE runs ADD COLUMN worker_pid INTEGER")
+        except sqlite3.OperationalError:
+            pass
         os.chmod(self.path, 0o600)
 
     def _q(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
@@ -247,15 +252,21 @@ class Store:
             (item["id"], item["repo"], item["number"], item["kind"], trigger, trigger_key, time.time()),
         )
 
-    def start_chat(self, repo: str, title: str) -> int:
+    def start_worker(self, repo: str, title: str) -> int:
         return self._x(
-            "INSERT INTO runs(item_id, repo, number, kind, trigger, started_at) VALUES (NULL, ?, 0, 'chat', ?, ?)",
+            "INSERT INTO runs(item_id, repo, number, kind, trigger, started_at) VALUES (NULL, ?, 0, 'worker', ?, ?)",
             (repo, title, time.time()),
         )
 
-    def add_run_usage(self, run_id: int, num_turns: int, cost_usd: float) -> None:
-        self._x("UPDATE runs SET num_turns = COALESCE(num_turns, 0) + ?, cost_usd = COALESCE(cost_usd, 0) + ? "
-                "WHERE id = ?", (num_turns, cost_usd, run_id))
+    def set_run_summary(self, run_id: int, summary: str) -> None:
+        self._x("UPDATE runs SET summary = ? WHERE id = ?", (summary, run_id))
+
+    def set_run_pid(self, run_id: int, pid: int) -> None:
+        self._x("UPDATE runs SET worker_pid = ? WHERE id = ?", (pid, run_id))
+
+    def orphaned_worker_pids(self) -> list[int]:
+        rows = self._q("SELECT worker_pid FROM runs WHERE status = 'running' AND worker_pid IS NOT NULL")
+        return [r["worker_pid"] for r in rows]
 
     def finish_run(self, run_id: int, status: str, summary: str = "", error: str = "",
                    num_turns: int | None = None, cost_usd: float | None = None) -> None:

@@ -11,8 +11,9 @@ and spins up [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) worke
   replied to directly (conversation comments, review summaries and unresolved inline review
   threads) and reads them all. It replies to each one with an assessment of whether it's correct
   and a change is justified, makes and pushes the commits, then replies again saying what it did.
-- **Ad-hoc chats**: start an interactive Claude worker from the web UI, either in a scratch
-  directory or in a fresh checkout of a tracked repository.
+- **Remote workers**: start a [Claude Code Remote Control](https://code.claude.com/docs/en/remote-control)
+  session on the bugsbot host from the web UI, then chat with it from the Claude app
+  (claude.ai/code, desktop or mobile). See [Remote workers](#remote-workers).
 - **No merging, ever.** The agents can't merge PRs (see [Safety](#safety)).
 
 Every comment, reply and PR description bugsbot posts ends with a configurable signature and a
@@ -76,6 +77,23 @@ Every page and API endpoint requires authentication:
 Put it behind a TLS-terminating reverse proxy, e.g.
 `bugsbot --host 127.0.0.1 --public-url https://bugsbot.example.com --no-browser` with your proxy
 forwarding to it. Don't serve it over plain HTTP on the internet.
+
+## Remote workers
+
+**Remote workers** in the web UI starts `claude remote-control` on the bugsbot host, in a fresh
+checkout of a tracked repo (or an empty scratch folder). You talk to the worker from the Claude app,
+not from bugsbot. bugsbot shows an **Open in Claude** link once the session connects, records its
+start-up output and duration, and can stop it.
+
+- The host must be logged in to Claude Code (`claude` then `/login`) with a Claude subscription
+  account. The worker appears in **that account's** Claude app, and only that account can open it.
+  Usage counts against that subscription, so bugsbot doesn't know the worker's cost.
+- bugsbot accepts Claude Code's "trust this folder?" prompt for the worker's own checkout.
+- The worker gets bugsbot's rules through project-local Claude Code config in the checkout,
+  hidden from git: the no-merge/no-push hook, the signed `push_branch`/`open_pull_request`/
+  `comment` tools, and the hard rules in `CLAUDE.local.md`.
+- The session link is read from Claude Code's local session records, which aren't a public
+  format. If it's missing, look for the worker by name in the Claude app's Code section.
 
 ## How the polling works
 

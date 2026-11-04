@@ -15,9 +15,9 @@ from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from bugsbot.auth import COOKIE, LINK_USER, SESSION_TTL, Auth
-from bugsbot.chat import ChatManager
 from bugsbot.github import GitHubError
 from bugsbot.harness import Harness
+from bugsbot.remote import WorkerManager
 from bugsbot.oauth import GITHUB_SESSION_TTL, STATE_COOKIE, GitHubOAuth, OAuthError
 from bugsbot.store import DEFAULT_SETTINGS, INTERNAL_KEYS, SECRET_KEYS, Store
 
@@ -42,13 +42,14 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
     auth = Auth(store)
     oauth = GitHubOAuth(store)
     harness = Harness(store, home)
-    chats = ChatManager(store, home)
+    workers = WorkerManager(store, home)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        workers.reap_orphans()
         harness.start()
         yield
-        await chats.stop()
+        await workers.stop()
         await harness.stop()
 
     app = FastAPI(title="bugsbot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -176,7 +177,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
             "repos": store.repos(),
             "labels": store.labels(),
             "status": {**harness.status, "running": len(harness.tasks)},
-            "chats": {rid: {"busy": c.busy} for rid, c in chats.sessions.items()},
+            "workers": {rid: {"name": w.name, "link": w.link} for rid, w in workers.workers.items()},
             "home": str(home),
         }
 
@@ -286,41 +287,26 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
 
     @app.post("/api/runs/{run_id}/cancel")
     async def cancel(run_id: int) -> dict[str, bool]:
-        if (session := chats.get(run_id)) is not None:
-            session.task.cancel()
+        if (worker := workers.get(run_id)) is not None:
+            worker.stop()
             return {"cancelled": True}
         return {"cancelled": harness.cancel_run(run_id)}
 
-    # -- chats -----------------------------------------------------------------
+    # -- remote workers --------------------------------------------------------
 
-    def chat(run_id: int):
-        session = chats.get(run_id)
-        if session is None:
-            raise HTTPException(404, "chat is not open")
-        return session
-
-    @app.post("/api/chats")
-    async def open_chat(repo: str = Body(""), branch: str = Body(""), message: str = Body("")) -> dict[str, int]:
+    @app.post("/api/workers")
+    async def open_worker(repo: str = Body(""), branch: str = Body(""), name: str = Body("")) -> dict[str, int]:
         repo = repo.strip()
         if repo and repo not in store.repos():
             raise HTTPException(400, "repo must be one of the tracked repositories")
-        return {"run_id": chats.open(repo, branch.strip(), message)}
+        return {"run_id": workers.open(repo, branch.strip(), name)}
 
-    @app.post("/api/chats/{run_id}/messages")
-    async def chat_message(run_id: int, text: str = Body(..., embed=True)) -> dict[str, bool]:
-        if not text.strip():
-            raise HTTPException(400, "empty message")
-        chat(run_id).send(text)
-        return {"ok": True}
-
-    @app.post("/api/chats/{run_id}/interrupt")
-    async def chat_interrupt(run_id: int) -> dict[str, bool]:
-        await chat(run_id).interrupt()
-        return {"ok": True}
-
-    @app.post("/api/chats/{run_id}/close")
-    async def chat_close(run_id: int) -> dict[str, bool]:
-        chat(run_id).close()
+    @app.post("/api/workers/{run_id}/stop")
+    async def stop_worker(run_id: int) -> dict[str, bool]:
+        worker = workers.get(run_id)
+        if worker is None:
+            raise HTTPException(404, "worker is not running")
+        worker.stop()
         return {"ok": True}
 
     @app.post("/api/poll")

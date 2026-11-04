@@ -72,7 +72,7 @@
   #log .ev { padding: 4px 0; border-bottom: 1px dashed var(--border); white-space: pre-wrap; word-break: break-word; }
   #log .t { color: var(--muted); margin-right: 8px; }
   #log .ty { font-weight: 600; margin-right: 8px; }
-  .ty-user { color: var(--warn); } .ty-assistant { color: var(--accent); } .ty-tool_use { color: var(--run); }
+  .ty-user { color: var(--warn); } .ty-terminal { color: var(--muted); } .ty-assistant { color: var(--accent); } .ty-tool_use { color: var(--run); }
   .ty-tool_error, .ty-error, .ty-blocked { color: var(--bad); } .ty-tool_ok, .ty-result { color: var(--ok); }
   .empty { color: var(--muted); padding: 16px 8px; }
   .toast { position: fixed; bottom: 16px; right: 16px; background: var(--text); color: var(--bg);
@@ -94,7 +94,7 @@
   <button data-tab="issues">Issues</button>
   <button data-tab="prs">Pull requests</button>
   <button data-tab="runs">Agent runs</button>
-  <button data-tab="chats">Chats</button>
+  <button data-tab="workers">Remote workers</button>
   <button data-tab="setup">Repos &amp; labels</button>
   <button data-tab="settings">Settings</button>
 </nav>
@@ -113,19 +113,26 @@
     <div class="card"><h2>Agent runs</h2><div class="table-wrap" id="runs-table"></div></div>
   </section>
 
-  <section id="chats">
+  <section id="workers">
     <div class="card">
-      <h2>Open an ad-hoc agent chat</h2>
-      <p class="muted small" style="margin-top:0">Starts an interactive Claude worker on this machine, optionally in a fresh checkout of a tracked repository.
-        It can push branches, open PRs and comment (all signed), but can never merge.</p>
+      <h2>Start a remote worker</h2>
+      <p style="margin-top:0">A remote worker is a <b>Claude Code Remote Control</b> session running on the bugsbot host.
+        You don't chat with it here. Open it in the <b>Claude app</b> (<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a>,
+        or the Claude desktop or mobile app) and talk to it there, as you would any Claude Code session.</p>
+      <ul class="small muted" style="margin:0 0 12px; padding-left:18px">
+        <li>It appears in the Claude account that's logged in to Claude Code <b>on the bugsbot host</b>, and only that account can open it.
+          That account needs a Claude subscription, and usage counts against it. bugsbot tracks the worker's duration but not its cost.</li>
+        <li>It works in a fresh checkout of the repository you pick, or in an empty scratch folder.</li>
+        <li>Like bugsbot's other agents, it can push branches, open PRs and comment (all signed) but can never merge.</li>
+      </ul>
       <div class="form">
-        <label for="chat-repo">Repository</label><select id="chat-repo"></select>
-        <label for="chat-branch">Branch (optional)</label><input type="text" id="chat-branch" placeholder="existing branch to check out, or blank for a new bugsbot/chat-N branch">
-        <label for="chat-first">First message</label><textarea id="chat-first" placeholder="What should the agent do?"></textarea>
+        <label for="worker-repo">Repository</label><select id="worker-repo"></select>
+        <label for="worker-branch">Branch (optional)</label><input type="text" id="worker-branch" placeholder="existing branch to check out, or blank for a new bugsbot/worker-N branch">
+        <label for="worker-name">Name (optional)</label><input type="text" id="worker-name" placeholder="shown in the Claude app, e.g. fix-flaky-tests">
       </div>
-      <div class="row" style="margin-top:12px"><button class="btn primary" onclick="openChat()">Start chat</button></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" onclick="openWorker()">Start remote worker</button></div>
     </div>
-    <div class="card"><h2>Chats</h2><div class="table-wrap" id="chats-table"></div></div>
+    <div class="card"><h2>Remote workers</h2><div class="table-wrap" id="workers-table"></div></div>
   </section>
 
   <section id="setup">
@@ -216,13 +223,11 @@
       <button class="btn" onclick="closeRun()">Hide</button></div></div>
     <div id="run-meta" class="small muted" style="margin-bottom:8px; white-space:pre-wrap"></div>
     <div id="log"></div>
-    <div id="composer" style="display:none; margin-top:10px">
-      <textarea id="chat-input" placeholder="Message the agent… (Ctrl/⌘+Enter to send)"></textarea>
-      <div class="row" style="margin-top:8px">
-        <button class="btn primary" onclick="sendChat()">Send</button>
-        <button class="btn" onclick="chatAction('interrupt')">Interrupt</button>
-        <button class="btn danger" onclick="chatAction('close')">End chat</button>
-        <span class="small muted" id="chat-busy"></span>
+    <div id="worker-panel" style="display:none; margin-top:10px">
+      <div class="row">
+        <a class="btn primary" id="worker-link" target="_blank" rel="noopener" style="text-decoration:none">Open in Claude</a>
+        <button class="btn danger" onclick="stopWorker()">Stop worker</button>
+        <span class="small muted" id="worker-hint"></span>
       </div>
     </div>
   </div>
@@ -303,10 +308,11 @@ async function refresh() {
 
   $("issues-table").innerHTML = itemTable(issues, "No issues tracked yet.");
   $("prs-table").innerHTML = itemTable(prs, "No pull requests watched yet.");
-  const agentRuns = runs.filter(r => r.kind !== "chat"), chatRuns = runs.filter(r => r.kind === "chat");
+  const isWorker = (r) => r.kind === "worker" || r.kind === "chat";
+  const agentRuns = runs.filter(r => !isWorker(r)), workerRuns = runs.filter(isWorker);
   $("runs-table").innerHTML = agentRuns.length ? runTable(agentRuns) : `<div class="empty">No agent runs yet.</div>`;
-  $("chats-table").innerHTML = chatRuns.length ? runTable(chatRuns) : `<div class="empty">No chats yet.</div>`;
-  const sel = $("chat-repo"), cur = sel.value;
+  $("workers-table").innerHTML = workerRuns.length ? workerTable(workerRuns) : `<div class="empty">No remote workers yet.</div>`;
+  const sel = $("worker-repo"), cur = sel.value;
   sel.innerHTML = `<option value="">(no repository — scratch directory)</option>` + state.repos.map(r => `<option>${esc(r)}</option>`).join("");
   sel.value = state.repos.includes(cur) ? cur : "";
   $("api-token-state").textContent = s.has_api_token ? "active" : "none";
@@ -340,10 +346,21 @@ function itemTable(items, emptyMsg) {
 function runTable(runs) {
   return `<table><tr><th>Run</th><th>Item</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Turns</th><th>Cost</th></tr>` +
     runs.map(r => `<tr class="click" onclick="openRun(${r.id})">
-      <td>#${r.id}</td><td>${r.kind === "chat" ? (esc(r.repo) || "<span class=muted>scratch</span>") : `${esc(r.repo)}#${r.number}`} <span class="muted small">${r.kind}</span></td>
+      <td>#${r.id}</td><td>${esc(r.repo)}#${r.number} <span class="muted small">${r.kind}</span></td>
       <td class="small">${esc(r.trigger)}</td><td>${pill(r.status)}</td>
       <td class="small">${when(r.started_at)}</td><td>${dur(r.duration_seconds)}${r.ended_at ? "" : "…"}</td>
       <td>${r.num_turns ?? "—"}</td><td>${r.cost_usd != null ? "$" + r.cost_usd.toFixed(3) : "—"}</td></tr>`).join("") + `</table>`;
+}
+
+function workerTable(runs) {
+  return `<table><tr><th>Worker</th><th>Name</th><th>Repository</th><th>Status</th><th>Started</th><th>Duration</th><th>Claude app</th></tr>` +
+    runs.map(r => { const live = state?.workers?.[r.id], link = live?.link || (r.summary.startsWith("https://") ? r.summary : "");
+      return `<tr class="click" onclick="openRun(${r.id})">
+      <td>#${r.id}</td><td>${esc(live?.name || r.trigger.replace(/^(worker|chat): /, ""))}</td>
+      <td>${esc(r.repo) || "<span class=muted>scratch</span>"}</td><td>${pill(r.status)}</td>
+      <td class="small">${when(r.started_at)}</td><td>${dur(r.duration_seconds)}${r.ended_at ? "" : "…"}</td>
+      <td>${link && !r.ended_at ? `<a href="${esc(link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in Claude ↗</a>`
+            : r.ended_at ? "—" : `<span class="small muted">starting…</span>`}</td></tr>`; }).join("") + `</table>`;
 }
 
 function openRun(id) {
@@ -355,11 +372,19 @@ async function loadRun(id, scroll) {
   const { run, events } = await api("GET", `/api/runs/${id}?after=${lastEventId}`);
   if (openRunId !== id) return;
   $("run-detail").style.display = "";
-  const label = run.kind === "chat" ? `Chat #${run.id}${run.repo ? " — " + esc(run.repo) : ""}` : `Run #${run.id} — ${esc(run.repo)}#${run.number}`;
+  const worker = run.kind === "worker" || run.kind === "chat";
+  const label = worker ? `Remote worker #${run.id}${run.repo ? " — " + esc(run.repo) : ""}` : `Run #${run.id} — ${esc(run.repo)}#${run.number}`;
   $("run-title").innerHTML = `${label} ${pill(run.status)}`;
-  const live = run.kind === "chat" && state?.chats?.[run.id];
-  $("composer").style.display = live ? "" : "none";
-  $("chat-busy").textContent = live?.busy ? "agent is working…" : (live ? "waiting for your message" : "");
+  const live = worker && state?.workers?.[run.id];
+  $("worker-panel").style.display = live ? "" : "none";
+  $("cancel-run").style.visibility = worker ? "hidden" : "";
+  if (live) {
+    $("worker-link").style.display = live.link ? "" : "none";
+    if (live.link) $("worker-link").href = live.link;
+    $("worker-hint").textContent = live.link
+      ? `Also listed in the Claude app's Code section as "${live.name}".`
+      : `Starting… once connected it appears in the Claude app's Code section as "${live.name}" (the log below shows progress).`;
+  }
   $("run-meta").textContent = `Trigger: ${run.trigger}\nStarted ${when(run.started_at)} · duration ${dur(run.duration_seconds)} · turns ${run.num_turns ?? "—"} · cost ${run.cost_usd != null ? "$" + run.cost_usd.toFixed(3) : "—"}` +
     (run.summary ? `\n\n${run.summary}` : "") + (run.error ? `\n\nError: ${run.error}` : "");
   $("cancel-run").style.display = run.status === "running" ? "" : "none";
@@ -374,17 +399,15 @@ async function loadRun(id, scroll) {
   if (scroll || atBottom) log.scrollTop = log.scrollHeight;
   if (scroll) $("run-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 }
-async function openChat() {
-  const { run_id } = await api("POST", "/api/chats", { repo: $("chat-repo").value, branch: $("chat-branch").value, message: $("chat-first").value });
-  $("chat-first").value = ""; $("chat-branch").value = "";
-  await refresh(); openRun(run_id);
+async function openWorker() {
+  const { run_id } = await api("POST", "/api/workers", { repo: $("worker-repo").value, branch: $("worker-branch").value, name: $("worker-name").value });
+  $("worker-branch").value = ""; $("worker-name").value = "";
+  toast("Starting remote worker…"); await refresh(); openRun(run_id);
 }
-async function sendChat() {
-  const text = $("chat-input").value.trim(); if (!text || !openRunId) return;
-  await api("POST", `/api/chats/${openRunId}/messages`, { text }); $("chat-input").value = ""; loadRun(openRunId, false);
+async function stopWorker() {
+  if (!openRunId || !confirm("Stop this remote worker? Its Claude app session will disconnect.")) return;
+  await api("POST", `/api/workers/${openRunId}/stop`); toast("Stopping worker"); refresh();
 }
-async function chatAction(action) { if (openRunId) { await api("POST", `/api/chats/${openRunId}/${action}`); toast(action === "close" ? "Ending chat" : "Interrupted"); refresh(); } }
-$("chat-input").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendChat(); });
 async function newToken() {
   if (!confirm("Generate a new API token? Any existing token stops working.")) return;
   const { token } = await api("POST", "/api/auth/token");
