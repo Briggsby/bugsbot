@@ -53,8 +53,8 @@ def main() -> None:
         return
 
     port = args.port
-    while not _port_free(args.host, port):
-        port += 1
+    if not _port_free(args.host, port):
+        sys.exit(f"bugsbot: port {port} is already in use; stop whatever is using it or pass --port")
 
     import uvicorn  # imported late so --help is fast
 

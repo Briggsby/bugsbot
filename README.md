@@ -52,7 +52,7 @@ State (settings, repos, labels, tracked items, run history) lives in `~/.bugsbot
 | Flag | Default | |
 |---|---|---|
 | `--host` | `127.0.0.1` | Interface to bind; `0.0.0.0` to expose it |
-| `--port` | `8765` | Next free port is used if taken |
+| `--port` | `8765` | bugsbot exits with an error if the port is already in use |
 | `--public-url` | | External URL when behind a reverse proxy (used in the printed sign-in link) |
 | `--forwarded-allow-ips` | `127.0.0.1` | Proxies trusted for `X-Forwarded-*` headers |
 | `--no-browser` | | Don't open the UI automatically |
