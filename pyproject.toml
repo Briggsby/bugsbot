@@ -1,0 +1,28 @@
+[project]
+name = "bugsbot"
+version = "0.1.0"
+description = "AI agent harness for GitHub issue and PR work"
+readme = "README.md"
+authors = [
+    { name = "Briggsby", email = "jackbriggsby@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.4.0",
+    "claude-agent-sdk>=0.2.178",
+    "fastapi>=0.162.0",
+    "httpx>=0.28.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+bugsbot = "bugsbot:main"
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

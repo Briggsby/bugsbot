@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bugsbot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #677085; --border: #dfe3ea;
+    --accent: #3b5bdb; --ok: #2b8a3e; --bad: #c92a2a; --warn: #b7791f; --run: #1971c2;
+    --code: #f1f3f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1e26; --text: #e4e7ee; --muted: #8b93a7; --border: #2b313d;
+      --accent: #748ffc; --ok: #69db7c; --bad: #ff8787; --warn: #ffd43b; --run: #74c0fc;
+      --code: #0f1217;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+           background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .status { color: var(--muted); font-size: 13px; flex: 1; }
+  nav { display: flex; gap: 4px; padding: 0 20px; background: var(--panel);
+        border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 12px;
+               color: var(--muted); font: inherit; cursor: pointer; white-space: nowrap; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  section { display: none; } section.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+          padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .stat .n { font-size: 24px; font-weight: 600; } .stat .l { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  tr.click { cursor: pointer; } tr.click:hover td { background: var(--bg); }
+  .table-wrap { overflow-x: auto; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); } .small { font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px;
+          border: 1px solid var(--border); white-space: nowrap; }
+  .s-running { color: var(--run); border-color: var(--run); }
+  .s-succeeded, .s-idle { color: var(--ok); border-color: var(--ok); }
+  .s-failed, .s-cancelled, .s-interrupted { color: var(--bad); border-color: var(--bad); }
+  .s-ignored { color: var(--muted); }
+  .s-pending, .s-new { color: var(--warn); border-color: var(--warn); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; margin: 0 6px 6px 0;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 14px; }
+  .chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; font-size: 14px; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--bg);
+          border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+  input[type=checkbox] { width: auto; }
+  textarea { width: 100%; min-height: 60px; }
+  button.btn { font: inherit; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border);
+               background: var(--panel); color: var(--text); cursor: pointer; }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.btn.danger { color: var(--bad); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > input[type=text], .row > input[type=password], .row > select { flex: 1; min-width: 180px; }
+  .form { display: grid; grid-template-columns: 220px 1fr; gap: 10px 16px; align-items: center; }
+  .form label { color: var(--muted); }
+  @media (max-width: 640px) { .form { grid-template-columns: 1fr; } }
+  .cred-status { font-size: 13px; margin-top: 4px; min-height: 1.3em; }
+  .cred-status.ok { color: var(--ok); } .cred-status.bad { color: var(--bad); } .cred-status.none { color: var(--muted); }
+  .errors { color: var(--bad); white-space: pre-wrap; font-size: 13px; }
+  #log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code);
+         border: 1px solid var(--border); border-radius: 6px; padding: 10px; max-height: 65vh; overflow: auto; }
+  #log .ev { padding: 4px 0; border-bottom: 1px dashed var(--border); white-space: pre-wrap; word-break: break-word; }
+  #log .t { color: var(--muted); margin-right: 8px; }
+  #log .ty { font-weight: 600; margin-right: 8px; }
+  .ty-user { color: var(--warn); } .ty-terminal { color: var(--muted); } .ty-assistant { color: var(--accent); } .ty-tool_use { color: var(--run); }
+  .ty-tool_error, .ty-error, .ty-blocked { color: var(--bad); } .ty-tool_ok, .ty-result { color: var(--ok); }
+  .empty { color: var(--muted); padding: 16px 8px; }
+  .toast { position: fixed; bottom: 16px; right: 16px; background: var(--text); color: var(--bg);
+           padding: 10px 14px; border-radius: 6px; opacity: 0; transition: opacity .2s; max-width: 420px; }
+  .toast.show { opacity: .95; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐛 bugsbot</h1>
+  <div class="status" id="status">Loading…</div>
+  <label class="row small"><input type="checkbox" id="polling"> Polling enabled</label>
+  <button class="btn" onclick="api('POST','/api/poll').then(()=>toast('Polling now'))">Poll now</button>
+  <span class="small muted" id="viewer"></span>
+  <button class="btn" onclick="api('POST','/api/logout').then(()=>location.href='/login')">Sign out</button>
+</header>
+<nav id="tabs">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="issues">Issues</button>
+  <button data-tab="prs">Pull requests</button>
+  <button data-tab="runs">Agent runs</button>
+  <button data-tab="workers">Remote workers</button>
+  <button data-tab="setup">Repos &amp; labels</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+<main>
+  <section id="overview" class="active">
+    <div class="grid" id="stats" style="margin-bottom:16px"></div>
+    <div class="card"><h2>Running agents</h2><div class="table-wrap" id="running"></div></div>
+    <div class="card"><h2>Tracking</h2><div id="tracking"></div></div>
+    <div class="card" id="errors-card" style="display:none"><h2>Problems on last poll</h2><div class="errors" id="errors"></div></div>
+  </section>
+
+  <section id="issues"><div class="card"><h2>Issues being tracked</h2><div class="table-wrap" id="issues-table"></div></div></section>
+  <section id="prs"><div class="card"><h2>Pull requests being watched</h2><div class="table-wrap" id="prs-table"></div></div></section>
+
+  <section id="runs">
+    <div class="card"><h2>Agent runs</h2><div class="table-wrap" id="runs-table"></div></div>
+  </section>
+
+  <section id="workers">
+    <div class="card">
+      <h2>Start a remote worker</h2>
+      <p style="margin-top:0">A remote worker is a <b>Claude Code Remote Control</b> session running on the bugsbot host.
+        You don't chat with it here. Open it in the <b>Claude app</b> (<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a>,
+        or the Claude desktop or mobile app) and talk to it there, as you would any Claude Code session.</p>
+      <div class="row" style="margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:6px">
+        <span>Claude account on this host:</span> <b id="claude-account" class="cred-status none" style="margin:0">checking…</b>
+        <button class="btn small" onclick="checkClaudeAccount()">Re-check</button>
+      </div>
+      <ul class="small muted" style="margin:0 0 12px; padding-left:18px">
+        <li>It appears in the Claude account that's logged in to Claude Code <b>on the bugsbot host</b>, and only that account can open it.
+          That account needs a Claude subscription, and usage counts against it. bugsbot tracks the worker's duration but not its cost.</li>
+        <li>It works in a fresh checkout of the repository you pick, or in an empty scratch folder.
+          For <b>Branch</b>, name an existing branch to continue it, or a new name to create it from the default branch.
+          Leave it blank and the agent creates a branch named for the task once you tell it what to do.</li>
+        <li>Like bugsbot's other agents, it can push branches, open PRs and comment (all signed) but can never merge.</li>
+        <li><b>bugsbot starts and stops workers, but doesn't control them.</b> Once a worker connects, only that Claude account
+          talks to it, from the Claude app: chatting, approvals, ending the session. bugsbot doesn't record the conversation.
+          You can stop a worker here at any time, and bugsbot also stops one that fails to connect within 3 minutes.</li>
+      </ul>
+      <div class="form">
+        <label for="worker-repo">Repository</label><select id="worker-repo"></select>
+        <label for="worker-branch">Branch (optional)</label><input type="text" id="worker-branch" placeholder="existing branch, or a new name to create; blank lets the agent name one for the task">
+        <label for="worker-name">Name (optional)</label><input type="text" id="worker-name" placeholder="shown in the Claude app, e.g. fix-flaky-tests">
+      </div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="start-worker" onclick="openWorker()">Start remote worker</button></div>
+    </div>
+    <div class="card"><h2>Remote workers</h2><div class="table-wrap" id="workers-table"></div></div>
+  </section>
+
+  <section id="setup">
+    <div class="card">
+      <h2>Repositories</h2>
+      <p class="muted small" style="margin-top:0"><b>Trusted authors</b> (optional, per repository): when set, bugsbot only works
+        issues and PRs <i>opened by</i> these users, members of these organisations, or bugsbot's own GitHub account. It only
+        responds to their comments, and only shows their comments to the agent. Leave both blank to use the global
+        "only respond to owners, members &amp; collaborators" setting.</p>
+      <div class="table-wrap" id="repo-list" style="margin-bottom:10px"></div>
+      <div class="row">
+        <input type="text" id="repo-input" list="repo-options" placeholder="owner/name — start typing or pick from your repos">
+        <datalist id="repo-options"></datalist>
+        <button class="btn" onclick="loadRepoOptions()">Load my repos</button>
+        <button class="btn primary" onclick="addRepo()">Add repository</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Labels</h2>
+      <p class="muted small" style="margin-top:0">Open issues and PRs carrying any of these labels in the repositories above get worked.
+        PRs bugsbot opens are given the same label as the issue.</p>
+      <div id="label-chips" style="margin-bottom:10px"></div>
+      <div class="row">
+        <input type="text" id="label-input" placeholder="e.g. bugsbot">
+        <button class="btn primary" onclick="addLabel()">Add label</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings">
+    <div class="card">
+      <h2>Credentials</h2>
+      <div class="form">
+        <label for="anthropic_api_key">Anthropic API key</label>
+        <div><div class="row"><input type="password" id="anthropic_api_key" autocomplete="off">
+          <button class="btn danger" onclick="clearSecret('anthropic_api_key')">Clear</button></div>
+          <div class="cred-status" id="anthropic_api_key-status"></div></div>
+        <label for="github_token">GitHub token</label>
+        <div><div class="row"><input type="password" id="github_token" autocomplete="off">
+          <button class="btn danger" onclick="clearSecret('github_token')">Clear</button></div>
+          <div class="cred-status" id="github_token-status"></div></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="save-creds" onclick="saveCredentials()">Save credentials</button>
+        <button class="btn" onclick="checkCredentials()">Re-check</button>
+      </div>
+      <p class="muted small">Leave a field blank to keep the stored value. If no GitHub token is set, the <code>gh</code> CLI login is used.
+        If no Anthropic key is set, Claude Code's own login is used. Stored locally in <code id="home"></code> (mode 600).</p>
+    </div>
+    <div class="card">
+      <h2>Agent behaviour</h2>
+      <div class="form">
+        <label for="model">Model</label><input type="text" id="model">
+        <label for="effort">Effort</label>
+        <select id="effort"><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
+        <label for="poll_interval_seconds">Poll interval (seconds)</label><input type="number" id="poll_interval_seconds" min="15">
+        <label for="max_concurrent_agents">Max concurrent agents</label><input type="number" id="max_concurrent_agents" min="1">
+        <label for="max_turns_per_run">Max turns per run</label><input type="number" id="max_turns_per_run" min="1">
+        <label for="max_budget_usd_per_run">Max budget per run (USD)</label><input type="number" id="max_budget_usd_per_run" min="0" step="0.5">
+        <label for="trusted_commenters_only">Only respond to repo owners, members &amp; collaborators</label><input type="checkbox" id="trusted_commenters_only">
+        <label for="git_author_name">Git author name</label><input type="text" id="git_author_name">
+        <label for="git_author_email">Git author email</label><input type="text" id="git_author_email">
+        <label for="signature">Signature appended to every comment &amp; PR</label><textarea id="signature"></textarea>
+      </div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div>
+    </div>
+    <div class="card">
+      <h2>GitHub sign-in</h2>
+      <p class="muted small" style="margin-top:0">Create an OAuth App at <a href="https://github.com/settings/developers" target="_blank" rel="noopener">GitHub → Settings → Developer settings → OAuth Apps</a>
+        (or under your organisation) with this <b>Authorization callback URL</b>:</p>
+      <pre class="small" id="oauth-callback" style="background:var(--code);padding:8px;border-radius:6px;overflow-x:auto"></pre>
+      <div class="form">
+        <label for="github_oauth_client_id">Client ID</label><input type="text" id="github_oauth_client_id" autocomplete="off">
+        <label for="github_oauth_client_secret">Client secret</label>
+        <div class="row"><input type="password" id="github_oauth_client_secret" autocomplete="off">
+          <button class="btn danger" onclick="clearSecret('github_oauth_client_secret')">Clear</button></div>
+        <label for="oauth_allowed_users">Allowed GitHub users</label><input type="text" id="oauth_allowed_users" placeholder="comma-separated logins, e.g. alice, bob">
+        <label for="oauth_allowed_orgs">Allowed organisations</label><input type="text" id="oauth_allowed_orgs" placeholder="comma-separated; any active member may sign in">
+        <label for="oauth_allow_repo_collaborators">Allow anyone with write access to a tracked repo</label><input type="checkbox" id="oauth_allow_repo_collaborators">
+      </div>
+      <p class="muted small">Nobody can sign in with GitHub unless they match one of the rules above. GitHub sessions last 24 hours.
+        If you lock yourself out, run <code>bugsbot login-link</code> on the server for a single-use sign-in link.</p>
+      <div class="row"><button class="btn primary" onclick="saveSettings()">Save settings</button></div>
+    </div>
+    <div class="card">
+      <h2>Access</h2>
+      <div class="row"><span>API token: <b id="api-token-state"></b></span>
+        <button class="btn" onclick="newToken()">Generate new token</button>
+        <button class="btn danger" onclick="revokeToken()">Revoke</button></div>
+      <div class="row" style="margin-top:12px"><button class="btn danger" onclick="signOutAll()">Sign out all other sessions</button></div>
+      <p class="muted small">Use as <code>Authorization: Bearer &lt;token&gt;</code> (plus header <code>X-Bugsbot: 1</code> on writes) for scripted access.</p>
+      <pre id="api-token" class="small" style="display:none; white-space:pre-wrap; word-break:break-all"></pre>
+    </div>
+  </section>
+  <div class="card" id="run-detail" style="display:none">
+    <div class="row" style="justify-content:space-between"><h2 id="run-title"></h2>
+      <div class="row"><button class="btn danger" id="cancel-run">Cancel run</button>
+      <button class="btn" onclick="closeRun()">Hide</button></div></div>
+    <div id="run-meta" class="small muted" style="margin-bottom:8px; white-space:pre-wrap"></div>
+    <div id="log"></div>
+    <div id="worker-panel" style="display:none; margin-top:10px">
+      <div class="row">
+        <a class="btn primary" id="worker-link" target="_blank" rel="noopener" style="text-decoration:none">Open in Claude</a>
+        <button class="btn danger" onclick="stopWorker()">Stop worker</button>
+        <span class="small muted" id="worker-hint"></span>
+      </div>
+    </div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const FIELDS = ["model","effort","poll_interval_seconds","max_concurrent_agents","max_turns_per_run",
+                "max_budget_usd_per_run","trusted_commenters_only","git_author_name","git_author_email","signature",
+                "github_oauth_client_id","oauth_allowed_users","oauth_allowed_orgs","oauth_allow_repo_collaborators"];
+const SECRETS = ["github_oauth_client_secret"];  // credentials have their own save flow
+const CREDS = ["anthropic_api_key", "github_token"];
+let state = null, openRunId = null, lastEventId = 0, settingsLoaded = false;
+
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: { "Content-Type": "application/json", "X-Bugsbot": "1" },
+                                  body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.status === 401) { location.href = "/login"; throw new Error("signed out"); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { toast(data.detail || res.statusText); throw new Error(data.detail); }
+  return data;
+}
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 3500); }
+function pill(s) { return `<span class="pill s-${esc(s)}">${esc(s)}</span>`; }
+function ago(ts) { if (!ts) return "—"; const d = (Date.now()/1000 - ts);
+  if (d < 0) return "in " + dur(-d); return dur(d) + " ago"; }
+function dur(s) { if (s == null) return "—"; s = Math.round(s); if (s < 60) return s + "s";
+  const m = Math.floor(s/60), r = s%60; if (m < 60) return `${m}m ${r}s`; return `${Math.floor(m/60)}h ${m%60}m`; }
+function when(ts) { return ts ? new Date(ts*1000).toLocaleString() : "—"; }
+function ghLink(repo, n, url) { return `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(repo)}#${n}</a>`; }
+
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
+  document.querySelectorAll("main section").forEach(s => s.classList.toggle("active", s.id === b.dataset.tab));
+  try { localStorage.setItem("bugsbot-tab", b.dataset.tab); } catch {}
+  if (b.dataset.tab === "settings") checkCredentials().catch(() => {});
+  if (b.dataset.tab === "workers") checkClaudeAccount().catch(() => {});
+  refresh();
+});
+try { const t = localStorage.getItem("bugsbot-tab"); if (t) document.querySelector(`[data-tab="${t}"]`)?.click(); } catch {}
+
+$("polling").onchange = (e) => api("PUT", "/api/settings", { polling_enabled: e.target.checked })
+  .then(() => toast(e.target.checked ? "Polling enabled" : "Polling paused"));
+
+async function refresh() {
+  state = await api("GET", "/api/state");
+  const [issues, prs, runs] = await Promise.all([api("GET","/api/items?kind=issue"), api("GET","/api/items?kind=pr"), api("GET","/api/runs")]);
+  const st = state.status, s = state.settings;
+  $("polling").checked = s.polling_enabled;
+  $("status").innerHTML = [
+    st.github_user ? `GitHub: <b>@${esc(st.github_user)}</b>` : "GitHub: not connected",
+    `last poll ${ago(st.last_poll_finished)}`,
+    s.polling_enabled ? `next ${ago(st.next_poll_at)}` : "<b>paused</b>",
+    `${st.running}/${s.max_concurrent_agents} agents running`,
+  ].join(" · ");
+  $("home").textContent = state.home;
+  $("viewer").textContent = state.viewer === "operator" ? "signed in via terminal link"
+    : state.viewer === "api-token" ? "API token" : `signed in as @${state.viewer}`;
+  $("oauth-callback").textContent = state.oauth_callback_url;
+  $("github_oauth_client_secret").placeholder = s.has_github_oauth_client_secret ? "•••••••• (stored)" : "not set";
+
+  const totalCost = runs.reduce((a, r) => a + (r.cost_usd || 0), 0);
+  const finished = runs.filter(r => r.ended_at);
+  const avg = finished.length ? finished.reduce((a, r) => a + r.duration_seconds, 0) / finished.length : null;
+  $("stats").innerHTML = [
+    [state.repos.length, "repositories"], [state.labels.length, "labels"],
+    [issues.filter(i => i.active).length, "issues tracked"], [prs.filter(i => i.active).length, "PRs watched"],
+    [st.running, "agents running"], [runs.length, "agent runs"], [dur(avg), "avg run time"], ["$" + totalCost.toFixed(2), "total cost"],
+  ].map(([n, l]) => `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${l}</div></div>`).join("");
+
+  const active = runs.filter(r => r.status === "running");
+  $("running").innerHTML = active.length ? runTable(active) : `<div class="empty">No agents running.</div>`;
+  $("tracking").innerHTML = (state.repos.length && state.labels.length)
+    ? `Watching <b>${state.repos.map(esc).join(", ")}</b> for labels ${state.labels.map(l => `<span class="pill">${esc(l)}</span>`).join(" ")}`
+    : `<span class="muted">Add at least one repository and one label under <b>Repos &amp; labels</b> to start.</span>`;
+  $("errors-card").style.display = st.errors?.length ? "" : "none";
+  $("errors").textContent = (st.errors || []).join("\n");
+
+  $("issues-table").innerHTML = itemTable(issues, "No issues tracked yet.");
+  $("prs-table").innerHTML = itemTable(prs, "No pull requests watched yet.");
+  const isWorker = (r) => r.kind === "worker" || r.kind === "chat";
+  const agentRuns = runs.filter(r => !isWorker(r)), workerRuns = runs.filter(isWorker);
+  $("runs-table").innerHTML = agentRuns.length ? runTable(agentRuns) : `<div class="empty">No agent runs yet.</div>`;
+  $("workers-table").innerHTML = workerRuns.length ? workerTable(workerRuns) : `<div class="empty">No remote workers yet.</div>`;
+  const sel = $("worker-repo"), cur = sel.value;
+  sel.innerHTML = `<option value="">(no repository — scratch directory)</option>` + state.repos.map(r => `<option>${esc(r)}</option>`).join("");
+  sel.value = state.repos.includes(cur) ? cur : "";
+  $("api-token-state").textContent = s.has_api_token ? "active" : "none";
+
+  renderRepos();
+  $("label-chips").innerHTML = state.labels.map(l => `<span class="chip">${esc(l)}<button title="Remove" onclick="removeLabel(${esc(JSON.stringify(l))})">✕</button></span>`).join("") || `<span class="muted">None yet.</span>`;
+
+  if (!settingsLoaded) {
+    for (const f of FIELDS) { const el = $(f); if (el.type === "checkbox") el.checked = !!s[f]; else el.value = s[f]; }
+    settingsLoaded = true;
+  }
+  $("anthropic_api_key").placeholder = s.has_anthropic_api_key ? "•••••••• (stored)" : "not set — Claude Code login will be used";
+  $("github_token").placeholder = s.has_github_token ? "•••••••• (stored)" : "not set — gh CLI login will be used";
+  if (openRunId) loadRun(openRunId, false);
+}
+
+function itemTable(items, emptyMsg) {
+  if (!items.length) return `<div class="empty">${emptyMsg}</div>`;
+  return `<table><tr><th>Item</th><th>Title</th><th>Labels</th><th>Status</th><th>Linked</th><th>Runs</th><th>Last run</th><th></th></tr>` +
+    items.map(i => `<tr style="${i.active ? "" : "opacity:.55"}">
+      <td>${ghLink(i.repo, i.number, i.url)}${i.active ? "" : `<div class="small muted">closed / unlabelled</div>`}</td>
+      <td>${esc(i.title)}</td>
+      <td>${i.labels.map(l => `<span class="pill">${esc(l)}</span>`).join(" ")}</td>
+      <td>${pill(i.status)}<div class="small muted">${esc(i.status_detail)}</div></td>
+      <td>${i.linked_numbers.map(n => `<a href="https://github.com/${esc(i.repo)}/issues/${n}" target="_blank" rel="noopener">#${n}</a>`).join(" ") || "—"}</td>
+      <td>${i.run_count}</td>
+      <td>${i.last_run ? `<a href="#" onclick="openRun(${i.last_run.id});return false">#${i.last_run.id}</a> ${pill(i.last_run.status)}<div class="small muted">${dur(i.last_run.duration_seconds)}</div>` : "—"}</td>
+      <td>${i.status === "running" ? "" : `<button class="btn small" onclick="retryItem(${i.id})">Re-run</button>`}</td></tr>`).join("") + `</table>`;
+}
+
+function runTable(runs) {
+  return `<table><tr><th>Run</th><th>Item</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Turns</th><th>Cost</th></tr>` +
+    runs.map(r => `<tr class="click" onclick="openRun(${r.id})">
+      <td>#${r.id}</td><td>${esc(r.repo)}#${r.number} <span class="muted small">${r.kind}</span></td>
+      <td class="small">${esc(r.trigger)}</td><td>${pill(r.status)}</td>
+      <td class="small">${when(r.started_at)}</td><td>${dur(r.duration_seconds)}${r.ended_at ? "" : "…"}</td>
+      <td>${r.num_turns ?? "—"}</td><td>${r.cost_usd != null ? "$" + r.cost_usd.toFixed(3) : "—"}</td></tr>`).join("") + `</table>`;
+}
+
+function workerTable(runs) {
+  return `<table><tr><th>Worker</th><th>Name</th><th>Repository</th><th>Status</th><th>Started</th><th>Duration</th><th>Claude app</th></tr>` +
+    runs.map(r => { const live = state?.workers?.[r.id], link = live?.link || (r.summary.startsWith("https://") ? r.summary : "");
+      return `<tr class="click" onclick="openRun(${r.id})">
+      <td>#${r.id}</td><td>${esc(live?.name || r.trigger.replace(/^(worker|chat): /, ""))}</td>
+      <td>${esc(r.repo) || "<span class=muted>scratch</span>"}</td><td>${pill(r.status)}</td>
+      <td class="small">${when(r.started_at)}</td><td>${dur(r.duration_seconds)}${r.ended_at ? "" : "…"}</td>
+      <td>${link && !r.ended_at ? `<a href="${esc(link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in Claude ↗</a>`
+            : r.ended_at ? "—" : `<span class="small muted">starting…</span>`}</td></tr>`; }).join("") + `</table>`;
+}
+
+function openRun(id) {
+  if (openRunId !== id) { openRunId = id; lastEventId = 0; $("log").innerHTML = ""; }
+  loadRun(id, true);
+}
+function closeRun() { openRunId = null; $("run-detail").style.display = "none"; }
+async function loadRun(id, scroll) {
+  const { run, events } = await api("GET", `/api/runs/${id}?after=${lastEventId}`);
+  if (openRunId !== id) return;
+  $("run-detail").style.display = "";
+  const worker = run.kind === "worker" || run.kind === "chat";
+  const label = worker ? `Remote worker #${run.id}${run.repo ? " — " + esc(run.repo) : ""}` : `Run #${run.id} — ${esc(run.repo)}#${run.number}`;
+  $("run-title").innerHTML = `${label} ${pill(run.status)}`;
+  const live = worker && state?.workers?.[run.id];
+  $("worker-panel").style.display = live ? "" : "none";
+  $("cancel-run").style.visibility = worker ? "hidden" : "";
+  if (live) {
+    $("worker-link").style.display = live.link ? "" : "none";
+    if (live.link) $("worker-link").href = live.link;
+    $("worker-hint").textContent = live.link
+      ? `Controlled from the Claude app, where it's listed in the Code section as "${live.name}".`
+      : `Starting… once connected it appears in the Claude app's Code section as "${live.name}" (the log below shows progress).`;
+  }
+  $("run-meta").textContent = `Trigger: ${run.trigger}\nStarted ${when(run.started_at)} · duration ${dur(run.duration_seconds)} · turns ${run.num_turns ?? "—"} · cost ${run.cost_usd != null ? "$" + run.cost_usd.toFixed(3) : "—"}` +
+    (run.summary ? `\n\n${run.summary}` : "") + (run.error ? `\n\nError: ${run.error}` : "");
+  $("cancel-run").style.display = run.status === "running" ? "" : "none";
+  $("cancel-run").onclick = () => api("POST", `/api/runs/${id}/cancel`).then(() => toast("Cancelling…"));
+  const log = $("log"), atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  for (const e of events) {
+    lastEventId = e.id;
+    const div = document.createElement("div"); div.className = "ev";
+    div.innerHTML = `<span class="t">${new Date(e.ts*1000).toLocaleTimeString()}</span><span class="ty ty-${esc(e.type)}">${esc(e.type)}</span>${esc(e.text)}`;
+    log.appendChild(div);
+  }
+  if (scroll || atBottom) log.scrollTop = log.scrollHeight;
+  if (scroll) $("run-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+async function checkClaudeAccount() {
+  const el = $("claude-account"); el.className = "cred-status none"; el.textContent = "checking…";
+  const a = await api("GET", "/api/workers/account");
+  const who = [a.email, a.orgName && `(${a.orgName}${a.subscriptionType ? ", " + a.subscriptionType : ""})`].filter(Boolean).join(" ");
+  el.className = "cred-status " + (a.ok ? "ok" : "bad");
+  el.textContent = a.ok ? `✓ ${who}` : `✗ ${a.detail}${who ? " — " + who : ""}. Run \`claude\` then /login as the OS user running bugsbot.`;
+  $("start-worker").disabled = !a.ok;
+}
+async function stopWorker() {
+  if (!openRunId || !confirm("Stop this remote worker? Its Claude app session will disconnect.")) return;
+  await api("POST", `/api/workers/${openRunId}/stop`); toast("Stopping worker"); refresh();
+}
+async function openWorker() {
+  const { run_id } = await api("POST", "/api/workers", { repo: $("worker-repo").value, branch: $("worker-branch").value, name: $("worker-name").value });
+  $("worker-branch").value = ""; $("worker-name").value = "";
+  toast("Starting remote worker…"); await refresh(); openRun(run_id);
+}
+async function newToken() {
+  if (!confirm("Generate a new API token? Any existing token stops working.")) return;
+  const { token } = await api("POST", "/api/auth/token");
+  $("api-token").style.display = ""; $("api-token").textContent = token + "\n\nCopy it now — it will not be shown again."; refresh();
+}
+async function signOutAll() { if (!confirm("Sign out every other browser and session?")) return;
+  await api("POST", "/api/auth/signout-all"); toast("All other sessions signed out"); }
+async function revokeToken() { await api("DELETE", "/api/auth/token"); $("api-token").style.display = "none"; toast("API token revoked"); refresh(); }
+
+let repoListKey = "";
+function renderRepos() {
+  // Re-render only when the data changes, so the 4-second refresh doesn't wipe what you're typing.
+  const key = JSON.stringify([state.repos, state.repo_trust]);
+  if (key === repoListKey) return;
+  repoListKey = key;
+  if (!state.repos.length) { $("repo-list").innerHTML = `<span class="muted">None yet.</span>`; return; }
+  $("repo-list").innerHTML = `<table><tr><th>Repository</th><th>Trusted users</th><th>Trusted organisations</th><th></th></tr>` +
+    state.repos.map((r, i) => { const t = state.repo_trust[r] || { users: [], orgs: [] };
+      return `<tr><td><a href="https://github.com/${esc(r)}" target="_blank" rel="noopener">${esc(r)}</a></td>
+        <td><input type="text" id="tu-${i}" value="${esc(t.users.join(", "))}" placeholder="anyone" style="width:100%"></td>
+        <td><input type="text" id="to-${i}" value="${esc(t.orgs.join(", "))}" placeholder="none" style="width:100%"></td>
+        <td style="white-space:nowrap"><button class="btn" onclick="saveTrust(${i})">Save</button>
+          <button class="btn danger" onclick="removeRepo('${esc(r)}')">Remove</button></td></tr>`; }).join("") + `</table>`;
+  state.repos.forEach((r, i) => ["tu", "to"].forEach(p =>
+    $(`${p}-${i}`).addEventListener("keydown", e => e.key === "Enter" && saveTrust(i))));
+}
+async function saveTrust(i) {
+  const repo = state.repos[i];
+  const t = await api("PUT", `/api/repos/${repo}/trust`, { users: $(`tu-${i}`).value, orgs: $(`to-${i}`).value });
+  toast(t.users.length || t.orgs.length ? `Trusted authors saved for ${repo}` : `${repo} now uses the global commenter setting`);
+  repoListKey = ""; refresh();
+}
+async function addRepo() { const v = $("repo-input").value.trim(); if (!v) return;
+  await api("POST", "/api/repos", { full_name: v }); $("repo-input").value = ""; toast("Repository added"); refresh(); }
+async function removeRepo(r) { if (!confirm(`Stop tracking ${r}?`)) return; await api("DELETE", `/api/repos/${r}`); refresh(); }
+async function loadRepoOptions() {
+  toast("Loading your repositories…");
+  const repos = await api("GET", "/api/github/repos");
+  $("repo-options").innerHTML = repos.map(r => `<option value="${esc(r.full_name)}">${esc(r.description)}</option>`).join("");
+  toast(`Loaded ${repos.length} repositories — start typing to pick one`); $("repo-input").focus();
+}
+async function addLabel() { const v = $("label-input").value.trim(); if (!v) return;
+  await api("POST", "/api/labels", { name: v }); $("label-input").value = ""; refresh(); }
+async function removeLabel(l) { await api("DELETE", `/api/labels/${encodeURIComponent(l)}`); refresh(); }
+async function retryItem(id) { await api("POST", `/api/items/${id}/retry`); toast("Queued for a fresh run"); refresh(); }
+async function clearSecret(k) {
+  await api("DELETE", `/api/secrets/${k}`); toast("Cleared"); await refresh();
+  if (CREDS.includes(k)) checkCredentials();
+}
+function showCredStatus(results) {
+  for (const k of CREDS) {
+    const r = results[k], el = $(`${k}-status`); if (!r) continue;
+    el.className = "cred-status " + (r.ok === true ? "ok" : r.ok === false ? "bad" : "none");
+    el.textContent = (r.ok === true ? "✓ " : r.ok === false ? "✗ " : "") + r.detail;
+  }
+}
+async function checkCredentials() {
+  for (const k of CREDS) { $(`${k}-status`).className = "cred-status none"; $(`${k}-status`).textContent = "checking…"; }
+  showCredStatus(await api("GET", "/api/credentials"));
+}
+async function saveCredentials() {
+  const body = {}; for (const k of CREDS) body[k] = $(k).value;
+  const btn = $("save-creds"); btn.disabled = true; btn.textContent = "Checking…";
+  try {
+    const results = await api("POST", "/api/credentials", body);
+    for (const k of CREDS) if (results[k].saved) $(k).value = "";
+    showCredStatus(results);
+    const failed = CREDS.filter(k => results[k].saved === false);
+    toast(failed.length ? "Some credentials didn't work; see below" : "Credentials checked");
+    refresh();
+  } finally { btn.disabled = false; btn.textContent = "Save credentials"; }
+}
+for (const k of CREDS) $(k).addEventListener("keydown", e => { if (e.key === "Enter") saveCredentials(); });
+async function saveSettings() {
+  const body = {};
+  for (const f of FIELDS) { const el = $(f); body[f] = el.type === "checkbox" ? el.checked : (el.type === "number" ? Number(el.value) : el.value); }
+  for (const k of SECRETS) if ($(k).value) body[k] = $(k).value;
+  await api("PUT", "/api/settings", body);
+  for (const k of SECRETS) $(k).value = "";
+  toast("Settings saved"); refresh();
+}
+$("repo-input").addEventListener("keydown", e => e.key === "Enter" && addRepo());
+$("label-input").addEventListener("keydown", e => e.key === "Enter" && addLabel());
+
+refresh();
+setInterval(() => refresh().catch(() => {}), 4000);
+</script>
+</body>
+</html>
