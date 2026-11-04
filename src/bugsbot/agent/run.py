@@ -9,6 +9,7 @@ from typing import Any
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 
 from bugsbot.agent.policy import SYSTEM_APPEND
+from bugsbot.anthropic_check import LOGIN_HINT, needs_login
 from bugsbot.agent.prompts import issue_prompt, pr_prompt
 from bugsbot.agent.session import build_options, log_message
 from bugsbot.agent.tools import ToolKit
@@ -138,6 +139,8 @@ class AgentRun:
             return RunResult("failed", summary or "agent produced no result")
         if result.is_error:
             summary = f"{result.subtype}: {'; '.join(result.errors or [])}\n{summary}"
+            if needs_login(summary):
+                summary = f"{LOGIN_HINT}\n{summary}"
         # On a PR, every pending comment must be answered for the run to count as done.
         failed = result.is_error or (missing and self.ctx.item["kind"] == "pr")
         return RunResult("failed" if failed else "succeeded", summary.strip(),

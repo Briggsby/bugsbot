@@ -114,7 +114,10 @@ def test_sessions(tmp_path):
     assert not auth.valid_session(cookie)
 
 
-def test_api_requires_auth(tmp_path):
+def test_api_requires_auth(tmp_path, monkeypatch):
+    async def key_ok(key, model):
+        return None
+    monkeypatch.setattr("bugsbot.app.check_api_key", key_ok)
     app = create_app(tmp_path)
     anon = TestClient(app)
     assert anon.get("/api/state").status_code == 401
@@ -129,7 +132,7 @@ def test_api_requires_auth(tmp_path):
     assert state["viewer"] == LINK_USER
     assert "session_secret" not in state["settings"] and "api_token_hash" not in state["settings"]
     assert c.put("/api/settings", json={"session_secret": "x"}, headers=h).status_code == 400
-    c.put("/api/settings", json={"anthropic_api_key": "sk-test", "poll_interval_seconds": 30}, headers=h)
+    c.put("/api/settings", json={"anthropic_api_key": "  sk-ant-test\n", "poll_interval_seconds": 30}, headers=h)
     s = c.get("/api/state").json()["settings"]
     assert s["has_anthropic_api_key"] and "anthropic_api_key" not in s and s["poll_interval_seconds"] == 30
     assert c.post("/api/labels", json={"name": "ai"}, headers=h).json() == ["ai"]
@@ -155,3 +158,25 @@ def test_legacy_settings_ignored(tmp_path):
     store = Store(tmp_path)
     store._x("INSERT INTO settings VALUES ('admin_password_hash', '\"scrypt$x$y\"')")
     assert "admin_password_hash" not in store.settings()
+
+
+def test_bad_api_key_is_rejected_on_save(tmp_path, monkeypatch):
+    seen = []
+    async def key_bad(key, model):
+        seen.append((key, model))
+        return "Anthropic rejected this API key"
+    monkeypatch.setattr("bugsbot.app.check_api_key", key_bad)
+    app = create_app(tmp_path)
+    c = link_client(app)
+    r = c.put("/api/settings", json={"anthropic_api_key": " sk-ant-bad "}, headers={"X-Bugsbot": "1"})
+    assert r.status_code == 400 and "rejected" in r.json()["detail"]
+    assert seen == [("sk-ant-bad", "claude-opus-5-5")]  # whitespace stripped before checking
+    assert not c.get("/api/state").json()["settings"]["has_anthropic_api_key"]
+
+
+def test_check_api_key_format():
+    import asyncio
+    from bugsbot.anthropic_check import check_api_key, needs_login
+    assert "sk-ant-" in asyncio.run(check_api_key("abc123", "claude-opus-5-5"))
+    assert needs_login("Invalid API key · Please run /login")
+    assert needs_login("Not logged in · Please run /login") and not needs_login("all good")

@@ -14,6 +14,7 @@ import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from bugsbot.anthropic_check import check_api_key
 from bugsbot.auth import COOKIE, LINK_USER, SESSION_TTL, Auth
 from bugsbot.github import GitHubError
 from bugsbot.harness import Harness
@@ -187,13 +188,20 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
         for key, value in values.items():
             if key not in DEFAULT_SETTINGS or key in INTERNAL_KEYS:
                 raise HTTPException(400, f"unknown setting {key}")
-            if key in SECRET_KEYS and not value:
-                continue  # blank secret field means "leave unchanged"
+            if key in SECRET_KEYS:
+                value = str(value).strip()
+                if not value:
+                    continue  # blank secret field means "leave unchanged"
             default = DEFAULT_SETTINGS[key]
             try:
                 clean[key] = type(default)(value) if not isinstance(default, bool) else bool(value)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"invalid value for {key}")
+        if "anthropic_api_key" in clean or "model" in clean:
+            merged = {**store.settings(), **clean}
+            if merged["anthropic_api_key"] and (problem := await check_api_key(
+                    merged["anthropic_api_key"], merged["model"])):
+                raise HTTPException(400, f"Anthropic API key not saved: {problem}")
         store.update_settings(clean)
         if "github_token" in clean:
             harness.status["github_user"] = None

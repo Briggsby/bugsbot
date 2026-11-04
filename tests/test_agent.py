@@ -139,3 +139,10 @@ def test_outcome_requires_every_pr_comment_answered(tmp_path):
     assert (out.status, out.num_turns, out.cost_usd) == ("succeeded", 4, 0.5)
     assert _run(tmp_path, "issue", [], [])._outcome(None).status == "failed"
     assert _run(tmp_path, "issue", [], [])._outcome(_result(is_error=True)).status == "failed"
+
+
+def test_outcome_explains_login_failures(tmp_path):
+    res = _result(is_error=True)
+    res.result = "Invalid API key · Please run /login"
+    out = _run(tmp_path, "issue", [], [])._outcome(res)
+    assert out.status == "failed" and out.summary.startswith("Claude Code had no working credentials")

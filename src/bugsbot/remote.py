@@ -27,6 +27,7 @@ import traceback
 from pathlib import Path
 
 from bugsbot.agent import guardrails
+from bugsbot.anthropic_check import needs_login
 from bugsbot.github import GitHub, resolve_token
 from bugsbot.store import Store
 from bugsbot.workspace import Workspace, agent_env, git
@@ -69,6 +70,7 @@ class RemoteWorker:
         self.proc: asyncio.subprocess.Process | None = None
         self._seen: set[str] = set()
         self._trust_answered = False
+        self._login_warned = False
         self.task = asyncio.create_task(self._main())
 
     def log(self, type_: str, text: str) -> None:
@@ -114,6 +116,10 @@ class RemoteWorker:
             self.log("info", "Accepted the folder trust prompt for this worker's checkout")
         if not self.link and (m := LINK_RE.search(text)):
             self._set_link(m.group(0))
+        if not self._login_warned and needs_login(text):
+            self._login_warned = True
+            self.log("error", "Claude Code on this host isn't logged in. Remote Control needs a Claude "
+                              "subscription login (an API key won't work): run `claude` on the host, then /login.")
         for line in re.split(r"[\r\n]+", text):
             line = line.strip()
             if line and line not in self._seen and len(self._seen) < MAX_LOG_LINES:
