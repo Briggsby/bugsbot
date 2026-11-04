@@ -9,7 +9,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from bugsbot.agent import AgentRun, RunContext
+from bugsbot.agent.run import AgentRun, RunContext
 from bugsbot.github import GitHub, GitHubError, resolve_token
 from bugsbot.store import Store
 from bugsbot.work import Work, issue_work, pr_work
@@ -148,7 +148,8 @@ class Harness:
         try:
             ctx = RunContext(store=self.store, gh=gh, home=self.home, run_id=run_id, item=item,
                              work=work, tracked_labels=self.store.labels())
-            status, summary, turns, cost = await AgentRun(ctx).run()
+            outcome = await AgentRun(ctx).run()
+            status, summary, turns, cost = outcome.status, outcome.summary, outcome.num_turns, outcome.cost_usd
         except asyncio.CancelledError:
             status, error = "cancelled", "cancelled from the web UI"
         except Exception as e:

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from bugsbot.agent import make_guard
+from bugsbot.agent.policy import make_guard
 from bugsbot.app import create_app
 from bugsbot.auth import LINK_USER, Auth
 from bugsbot.github import MARKER, is_bugsbot, replied_keys, sign

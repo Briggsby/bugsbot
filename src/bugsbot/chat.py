@@ -12,12 +12,14 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import ClaudeSDKClient, ResultMessage, tool
+from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 
-from bugsbot.agent import SYSTEM_APPEND, build_options, log_message
-from bugsbot.github import GitHub, GitHubError, resolve_token, sign
+from bugsbot.agent.policy import SYSTEM_APPEND
+from bugsbot.agent.session import build_options, log_message
+from bugsbot.agent.tools import ToolKit
+from bugsbot.github import GitHub, resolve_token
 from bugsbot.store import Store
-from bugsbot.workspace import GitError, Workspace
+from bugsbot.workspace import Workspace
 
 CHAT_APPEND = SYSTEM_APPEND + """
 You are in an interactive chat with a maintainer through the bugsbot web UI. Do what they
@@ -49,58 +51,6 @@ class ChatSession:
     def close(self) -> None:
         self.queue.put_nowait(None)
 
-    def _tools(self, gh: GitHub, workspace: Workspace, protected: set[str],
-               default_branch: str) -> list[Any]:
-        signature = self.store.get_setting("signature")
-        repo = self.repo
-
-        def ok(text: str) -> dict[str, Any]:
-            self.log("tool_ok", text[:2000])
-            return {"content": [{"type": "text", "text": text}]}
-
-        def err(text: str) -> dict[str, Any]:
-            self.log("tool_error", text[:2000])
-            return {"content": [{"type": "text", "text": f"Error: {text}"}], "is_error": True}
-
-        @tool("push_branch", "Push the currently checked-out branch to GitHub (never the default branch).",
-              {"type": "object", "properties": {}})
-        async def push_branch(args: dict[str, Any]) -> dict[str, Any]:
-            try:
-                return ok(await workspace.push(protected))
-            except GitError as e:
-                return err(str(e))
-
-        @tool("open_pull_request", f"Push the current branch and open a PR against {default_branch}. "
-              "The bugsbot signature is appended automatically.",
-              {"type": "object", "properties": {
-                  "title": {"type": "string"}, "body": {"type": "string"},
-                  "draft": {"type": "boolean", "default": False},
-                  "labels": {"type": "array", "items": {"type": "string"}, "default": []}},
-               "required": ["title", "body"]})
-        async def open_pull_request(args: dict[str, Any]) -> dict[str, Any]:
-            try:
-                pushed = await workspace.push(protected)
-                branch = await workspace.current_branch()
-                pr = await gh.find_open_pr(repo, branch) or await gh.create_pr(
-                    repo, branch, default_branch, args["title"], sign(args["body"], signature),
-                    bool(args.get("draft")))
-                await gh.add_labels(repo, pr["number"], list(args.get("labels") or []))
-            except (GitError, GitHubError) as e:
-                return err(str(e))
-            return ok(f"PR #{pr['number']}: {pr['html_url']}\n{pushed}")
-
-        @tool("comment", "Post a comment on an issue or PR in this repository (signature appended).",
-              {"type": "object", "properties": {"number": {"type": "integer"}, "body": {"type": "string"}},
-               "required": ["number", "body"]})
-        async def comment(args: dict[str, Any]) -> dict[str, Any]:
-            try:
-                c = await gh.create_comment(repo, int(args["number"]), sign(args["body"], signature))
-            except GitHubError as e:
-                return err(str(e))
-            return ok(f"Commented: {c['html_url']}")
-
-        return [push_branch, open_pull_request, comment]
-
     async def _main(self) -> None:
         settings = self.store.settings()
         gh: GitHub | None = None
@@ -117,7 +67,10 @@ class ChatSession:
                 await workspace.prepare(branch, default_branch, settings["git_author_name"],
                                         settings["git_author_email"])
                 cwd = workspace.path
-                tools = self._tools(gh, workspace, {default_branch, "main", "master"}, default_branch)
+                kit = ToolKit(gh=gh, repo=self.repo, signature=settings["signature"], workspace=workspace,
+                              protected={default_branch, "main", "master"}, base_branch=default_branch,
+                              log=self.log)
+                tools = [kit.push_branch(), kit.open_pull_request(labels=None), kit.comment()]
             else:
                 cwd = self.home / "chats" / f"chat-{self.run_id}"
                 cwd.mkdir(parents=True, exist_ok=True)
