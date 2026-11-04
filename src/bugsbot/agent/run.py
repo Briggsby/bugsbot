@@ -13,7 +13,8 @@ from bugsbot.anthropic_check import LOGIN_HINT, needs_login
 from bugsbot.agent.prompts import issue_prompt, pr_prompt
 from bugsbot.agent.session import build_options, log_message
 from bugsbot.agent.tools import ToolKit
-from bugsbot.github import GitHub
+from bugsbot.authors import AuthorCheck
+from bugsbot.github import GitHub, is_bugsbot
 from bugsbot.store import Store
 from bugsbot.work import Work
 from bugsbot.workspace import Workspace
@@ -28,6 +29,7 @@ class RunContext:
     item: dict[str, Any]
     work: Work
     tracked_labels: list[str]
+    author_allowed: AuthorCheck = lambda login, author_type, association: True  # noqa: E731
 
 
 @dataclass
@@ -90,7 +92,10 @@ class AgentRun:
         repo, number = item["repo"], item["number"]
         default_branch = (await gh.repo(repo))["default_branch"]
         issue = await gh.issue(repo, number)
-        comments = await gh.issue_comments(repo, number)
+        # Only show the agent comments from authors this repo trusts (plus bugsbot's own).
+        comments = [c for c in await gh.issue_comments(repo, number)
+                    if is_bugsbot(c.get("body")) or self.ctx.author_allowed(
+                        c["user"]["login"], c["user"].get("type"), c.get("author_association"))]
         branch = f"bugsbot/issue-{number}"
         ws = await self._workspace(branch, default_branch)
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from bugsbot.github import TRUSTED_ASSOCIATIONS, is_bugsbot, replied_keys
+from bugsbot.authors import AuthorCheck
+from bugsbot.github import is_bugsbot, replied_keys
 
 
 @dataclass
@@ -30,15 +31,14 @@ class Work:
 
 
 def _human(author_login: str | None, author_type: str | None, association: str | None,
-           body: str | None, trusted_only: bool) -> bool:
-    if is_bugsbot(body):
+           body: str | None, allow: AuthorCheck) -> bool:
+    """A comment that needs a response: not bugsbot's own, and by an author `allow` trusts."""
+    if is_bugsbot(body) or not author_login:
         return False
-    if not author_login or author_type == "Bot" or author_login.endswith("[bot]"):
-        return False
-    return not trusted_only or (association or "") in TRUSTED_ASSOCIATIONS
+    return allow(author_login, author_type, association)
 
 
-def issue_work(comments: list[dict[str, Any]], trusted_only: bool) -> Work | None:
+def issue_work(comments: list[dict[str, Any]], allow: AuthorCheck) -> Work | None:
     """An issue needs work if bugsbot has never commented, or humans have commented since."""
     bot_indexes = [i for i, c in enumerate(comments) if is_bugsbot(c.get("body"))]
     if not bot_indexes:
@@ -51,7 +51,7 @@ def issue_work(comments: list[dict[str, Any]], trusted_only: bool) -> Work | Non
         )
         for c in after
         if _human(c["user"]["login"], c["user"].get("type"), c.get("author_association"),
-                  c.get("body"), trusted_only)
+                  c.get("body"), allow)
     ]
     if not pending:
         return None
@@ -59,7 +59,7 @@ def issue_work(comments: list[dict[str, Any]], trusted_only: bool) -> Work | Non
                 trigger_key=",".join(p.key for p in pending), pending=pending)
 
 
-def pr_work(pr: dict[str, Any], trusted_only: bool) -> Work | None:
+def pr_work(pr: dict[str, Any], allow: AuthorCheck) -> Work | None:
     """Collect every comment on a PR that bugsbot has not yet replied to directly."""
     def login(node: dict[str, Any]) -> tuple[str | None, str | None]:
         author = node.get("author") or {}
@@ -78,7 +78,7 @@ def pr_work(pr: dict[str, Any], trusted_only: bool) -> Work | None:
     for c in comments:
         key = f"issue:{c['databaseId']}"
         who, typ = login(c)
-        if key not in replied and _human(who, typ, c.get("authorAssociation"), c.get("body"), trusted_only):
+        if key not in replied and _human(who, typ, c.get("authorAssociation"), c.get("body"), allow):
             pending.append(PendingComment(key=key, kind="issue", author=who or "", body=c["body"],
                                           url=c["url"], created_at=c["createdAt"],
                                           reply_target=c["databaseId"]))
@@ -86,7 +86,7 @@ def pr_work(pr: dict[str, Any], trusted_only: bool) -> Work | None:
         key = f"review:{r['databaseId']}"
         who, typ = login(r)
         if (r.get("body") or "").strip() and key not in replied and _human(
-                who, typ, r.get("authorAssociation"), r.get("body"), trusted_only):
+                who, typ, r.get("authorAssociation"), r.get("body"), allow):
             pending.append(PendingComment(key=key, kind="review", author=who or "",
                                           body=f"[review: {r['state']}]\n{r['body']}", url=r["url"],
                                           created_at=r["createdAt"], reply_target=r["databaseId"]))
@@ -98,7 +98,7 @@ def pr_work(pr: dict[str, Any], trusted_only: bool) -> Work | None:
         last_bot = max((i for i, c in enumerate(nodes) if is_bugsbot(c.get("body"))), default=-1)
         for c in nodes[last_bot + 1:]:
             who, typ = login(c)
-            if _human(who, typ, c.get("authorAssociation"), c.get("body"), trusted_only):
+            if _human(who, typ, c.get("authorAssociation"), c.get("body"), allow):
                 pending.append(PendingComment(
                     key=f"thread:{c['databaseId']}", kind="thread", author=who or "", body=c["body"],
                     url=c["url"], created_at=c["createdAt"], reply_target=root,

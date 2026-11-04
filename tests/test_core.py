@@ -8,7 +8,10 @@ from bugsbot.app import create_app
 from bugsbot.auth import LINK_USER, Auth
 from bugsbot.github import MARKER, is_bugsbot, replied_keys, sign
 from bugsbot.store import DEFAULT_SIGNATURE, Store
+from bugsbot.authors import association_policy
 from bugsbot.work import issue_work, pr_work
+
+TRUSTED, ANYONE = association_policy(True), association_policy(False)
 
 
 # -- signing ---------------------------------------------------------------------
@@ -32,13 +35,13 @@ def _rest_comment(id_, body, login="alice", assoc="OWNER", typ="User"):
 
 
 def test_issue_initial_then_followups():
-    assert issue_work([], True).trigger_key == "initial"
+    assert issue_work([], TRUSTED).trigger_key == "initial"
     bot = _rest_comment(1, f"on it {MARKER}")
-    assert issue_work([bot], True) is None
+    assert issue_work([bot], TRUSTED) is None
     w = issue_work([bot, _rest_comment(2, "any update?"), _rest_comment(3, "spam", assoc="NONE"),
-                    _rest_comment(4, "ci", login="ci[bot]", typ="Bot")], True)
+                    _rest_comment(4, "ci", login="ci[bot]", typ="Bot")], TRUSTED)
     assert [p.key for p in w.pending] == ["issue:2"]
-    assert len(issue_work([bot, _rest_comment(3, "hi", assoc="NONE")], False).pending) == 1
+    assert len(issue_work([bot, _rest_comment(3, "hi", assoc="NONE")], ANYONE).pending) == 1
 
 
 def _node(id_, body, login="bob", assoc="MEMBER", reply_to=None):
@@ -66,7 +69,7 @@ def test_pr_work_finds_unanswered_comments():
             _thread(_node(30, "resolved one"), resolved=True),
         ],
     )
-    w = pr_work(pr, True)
+    w = pr_work(pr, TRUSTED)
     keys = {p.key: p for p in w.pending}
     assert set(keys) == {"issue:1", "review:3", "thread:22"}
     assert keys["thread:22"].reply_target == 20  # replies go to the thread root
@@ -74,7 +77,7 @@ def test_pr_work_finds_unanswered_comments():
 
 def test_pr_work_respects_reply_markers():
     pr = _pr(comments=[_node(1, "please rename"), _node(2, sign("ok", "", reply_to=["issue:1"]))])
-    assert pr_work(pr, True) is None
+    assert pr_work(pr, TRUSTED) is None
 
 
 # -- guard -------------------------------------------------------------------------

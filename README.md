@@ -114,8 +114,14 @@ repo. It only takes a closer look at items whose `updated_at` changed:
 - A **PR** needs work if any human comment, review summary or unresolved review-thread comment
   hasn't had a direct bugsbot reply. Replies carry `<!-- bugsbot:reply-to:… -->` markers, so this
   state lives on GitHub itself.
-- By default, only comments from repo owners, members and collaborators count (configurable). Bot
-  accounts are ignored.
+- **Trusted authors (per repo, optional).** Under **Repos & labels**, give a repository trusted users
+  and/or organisations. bugsbot then only works issues and PRs opened by those users, members of
+  those orgs, or bugsbot's own GitHub account. Others show as *ignored*. It only responds to
+  comments and reviews by those authors, and leaves everyone else's comments out of the agent's
+  prompt. Org membership is checked through GitHub's API and cached for 10 minutes. Private
+  memberships only count if bugsbot's GitHub token belongs to a member of that org.
+- Repos without trusted authors use the global setting: by default, only comments from repo owners,
+  members and collaborators count. Bot accounts are ignored unless listed as trusted users.
 - A run is never repeated for the same trigger. A failed run waits for new activity or a manual
   **Re-run** from the UI.
 - At most *N* agents run at once (configurable). The rest queue.

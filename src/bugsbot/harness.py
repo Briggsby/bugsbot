@@ -12,6 +12,8 @@ from typing import Any
 from bugsbot.agent.run import AgentRun, RunContext
 from bugsbot.github import GitHub, GitHubError, resolve_token
 from bugsbot.store import Store
+from bugsbot.authors import (AuthorCheck, MembershipCache, TrustedAuthors, association_policy, issue_logins,
+                             pr_logins)
 from bugsbot.work import Work, issue_work, pr_work
 
 log = logging.getLogger("bugsbot")
@@ -23,6 +25,7 @@ class Harness:
         self.home = home
         self.tasks: dict[int, tuple[int, asyncio.Task]] = {}  # item_id -> (run_id, task)
         self._wake = asyncio.Event()
+        self.memberships = MembershipCache()
         self._loop_task: asyncio.Task | None = None
         self.status: dict[str, Any] = {
             "last_poll_started": None, "last_poll_finished": None, "next_poll_at": None,
@@ -93,6 +96,7 @@ class Harness:
                 found[raw["number"]] = raw
         self.store.deactivate_missing(repo, set(found))
         label_set = set(labels)
+        trusted = self._trusted_authors(repo)
 
         for number, raw in sorted(found.items()):
             kind = "pr" if "pull_request" in raw else "issue"
@@ -101,17 +105,37 @@ class Harness:
                                           item_labels, raw["updated_at"])
             if item["id"] in self.tasks:
                 continue
-            if item["gh_updated_at"] == raw["updated_at"] and item["status"] not in ("new", "pending"):
+            author = raw["user"]
+            if trusted and not (await trusted.prepare(gh, {author["login"]}))(
+                    author["login"], author.get("type"), raw.get("author_association")):
+                self.store.update_item(item["id"], status="ignored", gh_updated_at=raw["updated_at"],
+                                       status_detail=f"@{author['login']} isn't a trusted author for {repo}")
+                continue
+            # (an "ignored" item reaching here has just become trusted)
+            if item["gh_updated_at"] == raw["updated_at"] and item["status"] not in ("new", "pending", "ignored"):
                 continue  # nothing changed on GitHub since we last evaluated it
-            await self._evaluate(gh, item, raw["updated_at"], settings)
+            await self._evaluate(gh, item, raw, settings, trusted)
 
-    async def _evaluate(self, gh: GitHub, item: dict[str, Any], updated_at: str,
-                        settings: dict[str, Any]) -> None:
-        trusted_only = bool(settings["trusted_commenters_only"])
+    def _trusted_authors(self, repo: str) -> TrustedAuthors | None:
+        trust = self.store.repo_trust(repo)
+        if not (trust["users"] or trust["orgs"]):
+            return None
+        return TrustedAuthors(trust["users"], trust["orgs"], self.status["github_user"], self.memberships)
+
+    async def _evaluate(self, gh: GitHub, item: dict[str, Any], raw: dict[str, Any],
+                        settings: dict[str, Any], trusted: TrustedAuthors | None) -> None:
+        updated_at = raw["updated_at"]
+        allow: AuthorCheck = association_policy(bool(settings["trusted_commenters_only"]))
         if item["kind"] == "issue":
-            work = issue_work(await gh.issue_comments(item["repo"], item["number"]), trusted_only)
+            comments = await gh.issue_comments(item["repo"], item["number"])
+            if trusted:
+                allow = await trusted.prepare(gh, issue_logins(raw, comments))
+            work = issue_work(comments, allow)
         else:
-            work = pr_work(await gh.pr_context(item["repo"], item["number"]), trusted_only)
+            pr = await gh.pr_context(item["repo"], item["number"])
+            if trusted:
+                allow = await trusted.prepare(gh, pr_logins(pr))
+            work = pr_work(pr, allow)
         fields: dict[str, Any] = {"last_checked_at": time.time()}
 
         if work is None:
@@ -128,26 +152,26 @@ class Harness:
         else:
             fields.update(gh_updated_at=updated_at)
             self.store.update_item(item["id"], **fields)
-            self._start_run(item, work)
+            self._start_run(item, work, allow)
             return
         self.store.update_item(item["id"], **fields)
 
     # -- runs ------------------------------------------------------------------
 
-    def _start_run(self, item: dict[str, Any], work: Work) -> int:
+    def _start_run(self, item: dict[str, Any], work: Work, allow: AuthorCheck) -> int:
         run_id = self.store.start_run(item, work.trigger, work.trigger_key)
         self.store.update_item(item["id"], status="running", status_detail=work.trigger,
                                last_trigger_key=work.trigger_key)
-        task = asyncio.create_task(self._execute(run_id, item, work))
+        task = asyncio.create_task(self._execute(run_id, item, work, allow))
         self.tasks[item["id"]] = (run_id, task)
         return run_id
 
-    async def _execute(self, run_id: int, item: dict[str, Any], work: Work) -> None:
+    async def _execute(self, run_id: int, item: dict[str, Any], work: Work, allow: AuthorCheck) -> None:
         gh = self.github()
         status, summary, error, turns, cost = "failed", "", "", None, None
         try:
             ctx = RunContext(store=self.store, gh=gh, home=self.home, run_id=run_id, item=item,
-                             work=work, tracked_labels=self.store.labels())
+                             work=work, tracked_labels=self.store.labels(), author_allowed=allow)
             outcome = await AgentRun(ctx).run()
             status, summary, turns, cost = outcome.status, outcome.summary, outcome.num_turns, outcome.cost_usd
         except asyncio.CancelledError:

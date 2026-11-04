@@ -49,6 +49,7 @@
   .s-running { color: var(--run); border-color: var(--run); }
   .s-succeeded, .s-idle { color: var(--ok); border-color: var(--ok); }
   .s-failed, .s-cancelled, .s-interrupted { color: var(--bad); border-color: var(--bad); }
+  .s-ignored { color: var(--muted); }
   .s-pending, .s-new { color: var(--warn); border-color: var(--warn); }
   .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; margin: 0 6px 6px 0;
           background: var(--bg); border: 1px solid var(--border); border-radius: 14px; }
@@ -152,7 +153,11 @@
   <section id="setup">
     <div class="card">
       <h2>Repositories</h2>
-      <div id="repo-chips" style="margin-bottom:10px"></div>
+      <p class="muted small" style="margin-top:0"><b>Trusted authors</b> (optional, per repository): when set, bugsbot only works
+        issues and PRs <i>opened by</i> these users, members of these organisations, or bugsbot's own GitHub account. It only
+        responds to their comments, and only shows their comments to the agent. Leave both blank to use the global
+        "only respond to owners, members &amp; collaborators" setting.</p>
+      <div class="table-wrap" id="repo-list" style="margin-bottom:10px"></div>
       <div class="row">
         <input type="text" id="repo-input" list="repo-options" placeholder="owner/name — start typing or pick from your repos">
         <datalist id="repo-options"></datalist>
@@ -340,7 +345,7 @@ async function refresh() {
   sel.value = state.repos.includes(cur) ? cur : "";
   $("api-token-state").textContent = s.has_api_token ? "active" : "none";
 
-  $("repo-chips").innerHTML = state.repos.map(r => `<span class="chip">${esc(r)}<button title="Remove" onclick="removeRepo('${esc(r)}')">✕</button></span>`).join("") || `<span class="muted">None yet.</span>`;
+  renderRepos();
   $("label-chips").innerHTML = state.labels.map(l => `<span class="chip">${esc(l)}<button title="Remove" onclick="removeLabel(${esc(JSON.stringify(l))})">✕</button></span>`).join("") || `<span class="muted">None yet.</span>`;
 
   if (!settingsLoaded) {
@@ -453,6 +458,29 @@ async function signOutAll() { if (!confirm("Sign out every other browser and ses
   await api("POST", "/api/auth/signout-all"); toast("All other sessions signed out"); }
 async function revokeToken() { await api("DELETE", "/api/auth/token"); $("api-token").style.display = "none"; toast("API token revoked"); refresh(); }
 
+let repoListKey = "";
+function renderRepos() {
+  // Re-render only when the data changes, so the 4-second refresh doesn't wipe what you're typing.
+  const key = JSON.stringify([state.repos, state.repo_trust]);
+  if (key === repoListKey) return;
+  repoListKey = key;
+  if (!state.repos.length) { $("repo-list").innerHTML = `<span class="muted">None yet.</span>`; return; }
+  $("repo-list").innerHTML = `<table><tr><th>Repository</th><th>Trusted users</th><th>Trusted organisations</th><th></th></tr>` +
+    state.repos.map((r, i) => { const t = state.repo_trust[r] || { users: [], orgs: [] };
+      return `<tr><td><a href="https://github.com/${esc(r)}" target="_blank" rel="noopener">${esc(r)}</a></td>
+        <td><input type="text" id="tu-${i}" value="${esc(t.users.join(", "))}" placeholder="anyone" style="width:100%"></td>
+        <td><input type="text" id="to-${i}" value="${esc(t.orgs.join(", "))}" placeholder="none" style="width:100%"></td>
+        <td style="white-space:nowrap"><button class="btn" onclick="saveTrust(${i})">Save</button>
+          <button class="btn danger" onclick="removeRepo('${esc(r)}')">Remove</button></td></tr>`; }).join("") + `</table>`;
+  state.repos.forEach((r, i) => ["tu", "to"].forEach(p =>
+    $(`${p}-${i}`).addEventListener("keydown", e => e.key === "Enter" && saveTrust(i))));
+}
+async function saveTrust(i) {
+  const repo = state.repos[i];
+  const t = await api("PUT", `/api/repos/${repo}/trust`, { users: $(`tu-${i}`).value, orgs: $(`to-${i}`).value });
+  toast(t.users.length || t.orgs.length ? `Trusted authors saved for ${repo}` : `${repo} now uses the global commenter setting`);
+  repoListKey = ""; refresh();
+}
 async function addRepo() { const v = $("repo-input").value.trim(); if (!v) return;
   await api("POST", "/api/repos", { full_name: v }); $("repo-input").value = ""; toast("Repository added"); refresh(); }
 async function removeRepo(r) { if (!confirm(`Stop tracking ${r}?`)) return; await api("DELETE", `/api/repos/${r}`); refresh(); }

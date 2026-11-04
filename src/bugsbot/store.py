@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE TABLE IF NOT EXISTS repos (
     full_name TEXT PRIMARY KEY,
-    added_at REAL NOT NULL
+    added_at REAL NOT NULL,
+    trusted_users TEXT NOT NULL DEFAULT '[]',  -- GitHub logins; with trusted_orgs, empty = no restriction
+    trusted_orgs TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS labels (
     name TEXT PRIMARY KEY,
@@ -127,10 +129,15 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
-        try:  # databases from before worker_pid existed
-            self._db.execute("ALTER TABLE runs ADD COLUMN worker_pid INTEGER")
-        except sqlite3.OperationalError:
-            pass
+        for migration in (  # columns added after the first release
+            "ALTER TABLE runs ADD COLUMN worker_pid INTEGER",
+            "ALTER TABLE repos ADD COLUMN trusted_users TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE repos ADD COLUMN trusted_orgs TEXT NOT NULL DEFAULT '[]'",
+        ):
+            try:
+                self._db.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # already applied
         os.chmod(self.path, 0o600)
 
     def _q(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
@@ -181,7 +188,22 @@ class Store:
         return [r["full_name"] for r in self._q("SELECT full_name FROM repos ORDER BY full_name")]
 
     def add_repo(self, full_name: str) -> None:
-        self._x("INSERT OR IGNORE INTO repos VALUES (?, ?)", (full_name, time.time()))
+        self._x("INSERT OR IGNORE INTO repos(full_name, added_at) VALUES (?, ?)", (full_name, time.time()))
+
+    def repo_trust(self, full_name: str) -> dict[str, list[str]]:
+        rows = self._q("SELECT trusted_users, trusted_orgs FROM repos WHERE full_name = ?", (full_name,))
+        if not rows:
+            return {"users": [], "orgs": []}
+        return {"users": json.loads(rows[0]["trusted_users"]), "orgs": json.loads(rows[0]["trusted_orgs"])}
+
+    def all_repo_trust(self) -> dict[str, dict[str, list[str]]]:
+        return {r: self.repo_trust(r) for r in self.repos()}
+
+    def set_repo_trust(self, full_name: str, users: list[str], orgs: list[str]) -> None:
+        self._x("UPDATE repos SET trusted_users = ?, trusted_orgs = ? WHERE full_name = ?",
+                (json.dumps(users), json.dumps(orgs), full_name))
+        # Who counts as trusted changed, so every item needs re-evaluating on the next poll.
+        self._x("UPDATE items SET gh_updated_at = '' WHERE repo = ?", (full_name,))
 
     def remove_repo(self, full_name: str) -> None:
         self._x("DELETE FROM repos WHERE full_name = ?", (full_name,))

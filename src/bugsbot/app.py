@@ -33,6 +33,16 @@ ERROR_PAGE = ('<!doctype html><meta charset="utf-8"><title>bugsbot</title>'
               '<p><a href="/login">Back to sign-in</a></p></body>')
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$")
+
+
+def _logins(value: str | list[str]) -> list[str]:
+    items = value.split(",") if isinstance(value, str) else value
+    out = [v.strip().lstrip("@") for v in items if v.strip()]
+    if bad := [v for v in out if not LOGIN_RE.match(v)]:
+        raise HTTPException(400, f"not valid GitHub user or org names: {', '.join(bad)}")
+    unique = {v.lower(): v for v in reversed(out)}  # logins are case-insensitive; keep the first spelling
+    return sorted(unique.values(), key=str.lower)
 
 
 def _page(name: str) -> str:
@@ -177,6 +187,7 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
             "oauth_callback_url": callback_url(request),
             "settings": public_settings(),
             "repos": store.repos(),
+            "repo_trust": store.all_repo_trust(),
             "labels": store.labels(),
             "status": {**harness.status, "running": len(harness.tasks)},
             "workers": {rid: {"name": w.name, "link": w.link} for rid, w in workers.workers.items()},
@@ -294,6 +305,16 @@ def create_app(home: Path, public_url: str | None = None) -> FastAPI:
         store.add_repo(info["full_name"])
         harness.poll_now()
         return store.repos()
+
+    @app.put("/api/repos/{owner}/{name}/trust")
+    async def set_repo_trust(owner: str, name: str, users: str | list[str] = Body(""),
+                             orgs: str | list[str] = Body("")) -> dict[str, list[str]]:
+        repo = f"{owner}/{name}"
+        if repo not in store.repos():
+            raise HTTPException(404, "not a tracked repository")
+        store.set_repo_trust(repo, _logins(users), _logins(orgs))
+        harness.poll_now()
+        return store.repo_trust(repo)
 
     @app.delete("/api/repos/{owner}/{name}")
     async def remove_repo(owner: str, name: str) -> list[str]:

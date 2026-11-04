@@ -127,6 +127,19 @@ class GitHub:
         data = await self.graphql(PR_QUERY, {"owner": owner, "name": name, "number": number})
         return data["repository"]["pullRequest"]
 
+    async def is_org_member(self, org: str, login: str) -> bool:
+        """True for members GitHub lets this token see: all members if the token's user is in
+        the org, otherwise only public members."""
+        resp = await self._client.get(f"/orgs/{org}/members/{login}")
+        if resp.status_code == 204:
+            return True
+        if resp.status_code == 302:  # token's user isn't a member: only public membership is visible
+            resp = await self._client.get(f"/orgs/{org}/public_members/{login}")
+            return resp.status_code == 204
+        if resp.status_code in (404, 422):
+            return False
+        raise GitHubError(f"GET /orgs/{org}/members/{login} -> {resp.status_code}: {resp.text[:200]}")
+
     async def collaborator_permission(self, full_name: str, login: str) -> str:
         data = await self._req("GET", f"/repos/{full_name}/collaborators/{login}/permission")
         return data.get("permission", "none")
