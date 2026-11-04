@@ -5,7 +5,13 @@ from claude_agent_sdk import ResultMessage
 
 from bugsbot.agent.prompts import issue_prompt, pr_prompt
 from bugsbot.agent.run import AgentRun, RunContext
-from bugsbot.agent.tools import ToolKit
+from bugsbot.agent.tools import REPLIED, ToolKit
+from bugsbot.agent.toolspec import ToolSpec, build_tools
+from bugsbot import providers
+from bugsbot.providers.base import AgentOutcome
+from bugsbot.providers.claude.agent import ClaudeAgent
+
+claude_outcome = ClaudeAgent.outcome
 from bugsbot.github import is_bugsbot, replied_keys
 from bugsbot.store import Store
 from bugsbot.work import PendingComment, Work
@@ -49,9 +55,10 @@ class FakeWorkspace:
         return self.branch
 
 
-def kit(gh, ws=None):
+def kit(gh, ws=None, events=None):
     return ToolKit(gh=gh, repo="o/r", signature="SIG", workspace=ws or FakeWorkspace(),
-                   protected={"main"}, base_branch="main", log=lambda *_: None)
+                   protected={"main"}, base_branch="main",
+                   log=lambda type_, text: events.append((type_, text)) if events is not None else None)
 
 
 def call(t, **args):
@@ -64,15 +71,16 @@ def pending(key, kind, target):
 
 
 def test_reply_routes_threads_and_quotes_others():
-    gh, replied = FakeGitHub(), set()
-    t = kit(gh).reply_to_comment(5, [pending("thread:11", "thread", 10), pending("issue:3", "issue", 3)], replied)
+    gh, events = FakeGitHub(), []
+    t = kit(gh, events=events).reply_to_comment(5, [pending("thread:11", "thread", 10), pending("issue:3", "issue", 3)])
     call(t, comment_key="thread:11", body="agreed")
     call(t, comment_key="issue:3", body="done")
     (k1, target, body1), (k2, number, body2) = gh.calls
     assert (k1, target) == ("thread_reply", 10)  # reply goes to the thread root
     assert (k2, number) == ("comment", 5) and body2.startswith("> @bob: please fix")
     assert all(is_bugsbot(b) and "SIG" in b for b in (body1, body2))
-    assert replied_keys(body1) == {"thread:11"} and replied == {"thread:11", "issue:3"}
+    assert replied_keys(body1) == {"thread:11"}
+    assert [text for type_, text in events if type_ == REPLIED] == ["thread:11", "issue:3"]
     assert call(t, comment_key="issue:999", body="x")["is_error"]
 
 
@@ -118,13 +126,28 @@ def test_prompts_include_pending_keys():
     assert "[thread:11]" in text and "from a fork" in text
 
 
-def _run(tmp_path, kind, pending_keys, replied):
+def test_tool_spec_round_trip_and_tool_sets(tmp_path):
+    spec = ToolSpec(kind="issue", repo="o/r", cwd=str(tmp_path), base_branch="main", protected=["main"],
+                    number=7, pending=[pending("issue:3", "issue", 3)], pr_labels=["ai"])
+    again = ToolSpec.read(spec.write(tmp_path / "s.json"))
+    assert again == spec and isinstance(again.pending[0], type(spec.pending[0]))
+    gh = SimpleNamespace(token="t")
+    names = lambda s: [t.name for t in build_tools(s, gh, Store(tmp_path), 1, "SIG")]  # noqa: E731
+    assert names(spec) == ["comment", "reply_to_comment", "push_branch", "open_pull_request"]
+    spec.kind = "pr"
+    assert names(spec) == ["comment", "reply_to_comment", "push_branch"]
+    worker = ToolSpec(kind="worker", repo="o/r", cwd=str(tmp_path), base_branch="main", protected=["main"])
+    assert names(worker) == ["push_branch", "open_pull_request", "comment"]
+
+
+def _run(tmp_path, kind, pending_keys, replied, provider="claude"):
     store = Store(tmp_path)
     item = store.upsert_item("o/r", 3, kind, "t", "u", [], "")
     work = Work("x", "k", [pending(k, "issue", 1) for k in pending_keys])
-    run = AgentRun(RunContext(store, None, tmp_path, 1, item, work, []))
-    run.replied = set(replied)
-    return run
+    run_id = store.start_run(item, "x", "k")
+    for key in replied:
+        store.add_event(run_id, REPLIED, key)
+    return AgentRun(RunContext(store, None, tmp_path, run_id, item, work, []), providers.get(provider))
 
 
 def _result(is_error=False):
@@ -133,16 +156,19 @@ def _result(is_error=False):
 
 
 def test_outcome_requires_every_pr_comment_answered(tmp_path):
-    out = _run(tmp_path, "pr", ["issue:1", "issue:2"], ["issue:1"])._outcome(_result())
+    out = _run(tmp_path, "pr", ["issue:1", "issue:2"], ["issue:1"])._outcome(claude_outcome(_result()))
     assert out.status == "failed" and "issue:2" in out.summary
-    out = _run(tmp_path, "pr", ["issue:1"], ["issue:1"])._outcome(_result())
+    out = _run(tmp_path / "b", "pr", ["issue:1"], ["issue:1"])._outcome(claude_outcome(_result()))
     assert (out.status, out.num_turns, out.cost_usd) == ("succeeded", 4, 0.5)
-    assert _run(tmp_path, "issue", [], [])._outcome(None).status == "failed"
-    assert _run(tmp_path, "issue", [], [])._outcome(_result(is_error=True)).status == "failed"
+    assert _run(tmp_path / "c", "issue", [], [])._outcome(claude_outcome(None)).status == "failed"
+    assert _run(tmp_path / "d", "issue", [], [])._outcome(claude_outcome(_result(is_error=True))).status == "failed"
 
 
 def test_outcome_explains_login_failures(tmp_path):
     res = _result(is_error=True)
     res.result = "Invalid API key · Please run /login"
-    out = _run(tmp_path, "issue", [], [])._outcome(res)
+    out = _run(tmp_path, "issue", [], [])._outcome(claude_outcome(res))
     assert out.status == "failed" and out.summary.startswith("Claude Code had no working credentials")
+    out = _run(tmp_path / "b", "issue", [], [], "cursor")._outcome(
+        AgentOutcome(ok=False, error="Error: not authenticated. Run agent login"))
+    assert out.summary.startswith("Cursor had no working credentials")

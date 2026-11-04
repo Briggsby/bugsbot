@@ -132,12 +132,13 @@ jobs:
           BUGSBOT_GITHUB_TOKEN: ${{ secrets.BUGSBOT_GITHUB_TOKEN }}
           BUGSBOT_OAUTH_CLIENT_SECRET: ${{ secrets.BUGSBOT_OAUTH_CLIENT_SECRET }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: |
           # Pass the inputs in a root-only file over SSH (not on a command line), which the
           # server deletes before provisioning.
           for name in BUGSBOT_DOMAIN BUGSBOT_REPOS BUGSBOT_LABELS BUGSBOT_OAUTH_CLIENT_ID \
               BUGSBOT_ALLOWED_USERS BUGSBOT_ALLOWED_ORGS BUGSBOT_SETTINGS_JSON ADMIN_SSH_PUBLIC_KEYS \
-              BUGSBOT_GITHUB_TOKEN BUGSBOT_OAUTH_CLIENT_SECRET ANTHROPIC_API_KEY; do
+              BUGSBOT_GITHUB_TOKEN BUGSBOT_OAUTH_CLIENT_SECRET ANTHROPIC_API_KEY CURSOR_API_KEY; do
             printf 'export %s=%q\n' "$name" "${!name}"
           done | ssh bugsbot 'umask 077 && cat >/root/bugsbot-deploy.env'
           ssh bugsbot '. /root/bugsbot-deploy.env && rm -f /root/bugsbot-deploy.env && bash /opt/bugsbot/app/deploy/provision.sh'

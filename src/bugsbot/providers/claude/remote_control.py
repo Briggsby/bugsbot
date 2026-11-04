@@ -1,4 +1,4 @@
-"""Ad-hoc Claude Code Remote Control workers.
+"""Claude remote workers: Claude Code Remote Control sessions on this host.
 
 Each worker is a `claude remote-control` process on this host, working in its own
 checkout. You chat with it from the Claude app (claude.ai/code or mobile), signed in
@@ -32,11 +32,13 @@ import time
 import traceback
 from pathlib import Path
 
-from bugsbot.agent import guardrails
-from bugsbot.anthropic_check import needs_login
-from bugsbot.claude_trust import (TrustError, mark_remote_control_enabled, trust_folder, untrust_all_inside,
-                                  untrust_folder)
+from bugsbot.agent.toolspec import ToolSpec
 from bugsbot.github import GitHub, resolve_token
+from bugsbot.providers.base import WorkerRequest
+from bugsbot.providers.claude import guardrails
+from bugsbot.providers.claude.credentials import needs_login
+from bugsbot.providers.claude.trust import (TrustError, mark_remote_control_enabled, trust_folder,
+                                            untrust_all_inside, untrust_folder)
 from bugsbot.store import Store
 from bugsbot.workspace import Workspace, agent_env, git
 
@@ -114,11 +116,10 @@ async def claude_account(store: Store, home: Path) -> dict[str, object]:
 
 
 class RemoteWorker:
-    def __init__(self, store: Store, home: Path, run_id: int, repo: str, branch: str, name: str,
-                 label: str = ""):
+    def __init__(self, store: Store, home: Path, run_id: int, request: WorkerRequest):
         self.store, self.home, self.run_id = store, home, run_id
-        self.repo, self.branch, self.name = repo, branch, name
-        self.label = label  # the name the maintainer typed, if any
+        self.repo, self.branch, self.name = request.repo, request.branch, request.session_name
+        self.label = request.label  # the name the maintainer typed, if any
         self.default_branch = ""
         self.link: str | None = None
         self.proc: asyncio.subprocess.Process | None = None
@@ -137,6 +138,9 @@ class RemoteWorker:
     def stop(self, reason: str = "stopped from bugsbot") -> None:
         self._stop_reason = reason
         self.task.cancel()
+
+    def detach(self) -> None:
+        self.stop("bugsbot shut down")  # the session runs in a child process, so it can't outlive bugsbot
 
     async def _prepare_cwd(self) -> Path:
         settings = self.store.settings()
@@ -230,7 +234,12 @@ class RemoteWorker:
             if not claude:
                 raise RuntimeError("the `claude` CLI is not installed on this host")
             cwd = await self._prepare_cwd()
-            guardrails.install(cwd, self.home, self.run_id, self.repo or None, WORKER_RULES + self.branch_rules())
+            spec = None
+            if self.repo:
+                spec = ToolSpec(kind="worker", repo=self.repo, cwd=str(cwd), base_branch=self.default_branch,
+                                protected=sorted({self.default_branch, "main", "master"})).write(
+                    self.home / "runs" / str(self.run_id) / "tools.json")
+            guardrails.install(cwd, self.home, self.run_id, spec, WORKER_RULES + self.branch_rules())
             trust_folder(cwd, workers_root(self.home))
             if mark_remote_control_enabled():
                 self.log("info", "Marked Remote Control as enabled in Claude Code's config")
@@ -316,38 +325,16 @@ def _is_remote_control(pid: int) -> bool:
     return "remote-control" in out
 
 
-class WorkerManager:
-    def __init__(self, store: Store, home: Path):
-        self.store, self.home = store, home
-        self.workers: dict[int, RemoteWorker] = {}
-
-    def reap_orphans(self) -> None:
-        """Stop workers left running by a previous bugsbot process (call before marking runs interrupted)."""
-        for pid in self.store.orphaned_worker_pids():
-            if _is_remote_control(pid):
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
-        # No worker is running yet, so any trust entries inside the workers folder are leftovers.
-        try:
-            untrust_all_inside(workers_root(self.home))
-        except (TrustError, OSError):
-            pass
-
-    def open(self, repo: str, branch: str, name: str) -> int:
-        label = name.strip() or (repo.split("/")[-1] if repo else "scratch")
-        run_id = self.store.start_worker(repo, f"worker: {label}")
-        session_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"bugsbot-{run_id}-{label}")[:60]
-        worker = RemoteWorker(self.store, self.home, run_id, repo, branch, session_name, name.strip())
-        worker.task.add_done_callback(lambda _: self.workers.pop(run_id, None))
-        self.workers[run_id] = worker
-        return run_id
-
-    def get(self, run_id: int) -> RemoteWorker | None:
-        return self.workers.get(run_id)
-
-    async def stop(self) -> None:
-        for w in list(self.workers.values()):
-            w.stop("bugsbot shut down")
-        await asyncio.gather(*(w.task for w in self.workers.values()), return_exceptions=True)
+def recover_workers(store: Store, home: Path) -> None:
+    """Stop workers left running by a previous bugsbot process, and remove their folder trust."""
+    for pid in store.orphaned_worker_pids():
+        if _is_remote_control(pid):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+    # No worker is running yet, so any trust entries inside the workers folder are leftovers.
+    try:
+        untrust_all_inside(workers_root(home))
+    except (TrustError, OSError):
+        pass

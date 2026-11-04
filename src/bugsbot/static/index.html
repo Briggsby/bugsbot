@@ -119,14 +119,22 @@
   <section id="workers">
     <div class="card">
       <h2>Start a remote worker</h2>
-      <p style="margin-top:0">A remote worker is a <b>Claude Code Remote Control</b> session running on the bugsbot host.
-        You don't chat with it here. Open it in the <b>Claude app</b> (<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a>,
-        or the Claude desktop or mobile app) and talk to it there, as you would any Claude Code session.</p>
-      <div class="row" style="margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:6px">
-        <span>Claude account on this host:</span> <b id="claude-account" class="cred-status none" style="margin:0">checking…</b>
-        <button class="btn small" onclick="checkClaudeAccount()">Re-check</button>
+      <p style="margin-top:0">A remote worker is an agent you chat with in its provider's own app, not here.
+        bugsbot starts it, links to it, tracks how long it runs, and can stop it.</p>
+      <div class="form" style="margin-bottom:12px">
+        <label for="worker-provider">Kind</label>
+        <select id="worker-provider" onchange="workerProviderChanged()">
+          <option value="claude">Claude Code Remote Control (runs on this host)</option>
+          <option value="cursor">Cursor Cloud Agent (runs in Cursor's cloud)</option>
+        </select>
       </div>
-      <ul class="small muted" style="margin:0 0 12px; padding-left:18px">
+      <div class="row" style="margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:6px">
+        <span id="worker-account-label">Claude account on this host:</span> <b id="worker-account" class="cred-status none" style="margin:0">checking…</b>
+        <button class="btn small" onclick="checkWorkerAccount()">Re-check</button>
+      </div>
+      <ul class="small muted worker-about" data-provider="claude" style="margin:0 0 12px; padding-left:18px">
+        <li>A <b>Claude Code Remote Control</b> session on the bugsbot host. Open it in the <b>Claude app</b>
+          (<a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a>, or the Claude desktop or mobile app).</li>
         <li>It appears in the Claude account that's logged in to Claude Code <b>on the bugsbot host</b>, and only that account can open it.
           That account needs a Claude subscription, and usage counts against it. bugsbot tracks the worker's duration but not its cost.</li>
         <li>It works in a fresh checkout of the repository you pick, or in an empty scratch folder.
@@ -137,10 +145,25 @@
           talks to it, from the Claude app: chatting, approvals, ending the session. bugsbot doesn't record the conversation.
           You can stop a worker here at any time, and bugsbot also stops one that fails to connect within 3 minutes.</li>
       </ul>
+      <ul class="small muted worker-about" data-provider="cursor" style="margin:0 0 12px; padding-left:18px; display:none">
+        <li>A <b>Cursor Cloud Agent</b>, running on Cursor's machines against the repository you pick. Chat with it at
+          <a href="https://cursor.com/agents" target="_blank" rel="noopener">cursor.com/agents</a> (in any browser) or in Cursor.
+          It runs on the Cursor account that owns the API key set under Settings, and usage counts against that account.</li>
+        <li>It needs a <b>first message</b>: the task to start on. After that, you talk to it in Cursor; bugsbot doesn't record the
+          conversation, only its status and the branches and PRs it reports.</li>
+        <li>For <b>Branch</b>, name an existing branch to work on it, or a new name to have bugsbot create it from the default branch.
+          Leave it blank and Cursor creates a new <code>cursor/…</code> branch.</li>
+        <li><b>bugsbot's guardrails don't apply.</b> It runs outside this host and pushes with Cursor's GitHub app, so bugsbot can't
+          block merges or sign its comments; it's only told not to merge or push to the default branch, and to sign what it writes.
+          Protect your default branch with a GitHub ruleset.</li>
+        <li>It keeps running if bugsbot restarts, and bugsbot picks it up again. Stopping it here stops its current run and
+          archives it in Cursor (you can unarchive it there). Archiving it in Cursor ends it here too.</li>
+      </ul>
       <div class="form">
         <label for="worker-repo">Repository</label><select id="worker-repo"></select>
         <label for="worker-branch">Branch (optional)</label><input type="text" id="worker-branch" placeholder="existing branch, or a new name to create; blank lets the agent name one for the task">
-        <label for="worker-name">Name (optional)</label><input type="text" id="worker-name" placeholder="shown in the Claude app, e.g. fix-flaky-tests">
+        <label for="worker-name">Name (optional)</label><input type="text" id="worker-name" placeholder="shown in the app, e.g. fix-flaky-tests">
+        <label for="worker-task" class="worker-task">First message</label><textarea id="worker-task" class="worker-task" placeholder="what the agent should start on"></textarea>
       </div>
       <div class="row" style="margin-top:12px"><button class="btn primary" id="start-worker" onclick="openWorker()">Start remote worker</button></div>
     </div>
@@ -182,6 +205,10 @@
         <div><div class="row"><input type="password" id="anthropic_api_key" autocomplete="off">
           <button class="btn danger" onclick="clearSecret('anthropic_api_key')">Clear</button></div>
           <div class="cred-status" id="anthropic_api_key-status"></div></div>
+        <label for="cursor_api_key">Cursor API key</label>
+        <div><div class="row"><input type="password" id="cursor_api_key" autocomplete="off">
+          <button class="btn danger" onclick="clearSecret('cursor_api_key')">Clear</button></div>
+          <div class="cred-status" id="cursor_api_key-status"></div></div>
         <label for="github_token">GitHub token</label>
         <div><div class="row"><input type="password" id="github_token" autocomplete="off">
           <button class="btn danger" onclick="clearSecret('github_token')">Clear</button></div>
@@ -192,23 +219,30 @@
         <button class="btn" onclick="checkCredentials()">Re-check</button>
       </div>
       <p class="muted small">Leave a field blank to keep the stored value. If no GitHub token is set, the <code>gh</code> CLI login is used.
-        If no Anthropic key is set, Claude Code's own login is used. Stored locally in <code id="home"></code> (mode 600).</p>
+        If no Anthropic key is set, Claude Code's own login is used. The Cursor API key (Cursor dashboard → Integrations →
+        User API Keys) is used by Cursor's CLI for issue and PR runs, and is required for Cursor Cloud Agent workers. Stored locally in <code id="home"></code> (mode 600).</p>
     </div>
     <div class="card">
       <h2>Agent behaviour</h2>
       <div class="form">
-        <label for="model">Model</label><input type="text" id="model">
-        <label for="effort">Effort</label>
+        <label for="agent_provider">Agent for issues &amp; PRs</label>
+        <select id="agent_provider"><option value="claude">Claude Code (Claude Agent SDK)</option><option value="cursor">Cursor (Cursor CLI on this host)</option></select>
+        <label for="model">Claude model</label><input type="text" id="model">
+        <label for="effort">Claude effort</label>
         <select id="effort"><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
+        <label for="cursor_model">Cursor model</label><input type="text" id="cursor_model" placeholder="blank: Cursor's default (see `agent models`)">
         <label for="poll_interval_seconds">Poll interval (seconds)</label><input type="number" id="poll_interval_seconds" min="15">
         <label for="max_concurrent_agents">Max concurrent agents</label><input type="number" id="max_concurrent_agents" min="1">
-        <label for="max_turns_per_run">Max turns per run</label><input type="number" id="max_turns_per_run" min="1">
-        <label for="max_budget_usd_per_run">Max budget per run (USD)</label><input type="number" id="max_budget_usd_per_run" min="0" step="0.5">
+        <label for="max_minutes_per_run">Max minutes per run</label><input type="number" id="max_minutes_per_run" min="0">
+        <label for="max_turns_per_run">Max turns per run (Claude)</label><input type="number" id="max_turns_per_run" min="1">
+        <label for="max_budget_usd_per_run">Max budget per run, USD (Claude)</label><input type="number" id="max_budget_usd_per_run" min="0" step="0.5">
         <label for="trusted_commenters_only">Only respond to repo owners, members &amp; collaborators</label><input type="checkbox" id="trusted_commenters_only">
         <label for="git_author_name">Git author name</label><input type="text" id="git_author_name">
         <label for="git_author_email">Git author email</label><input type="text" id="git_author_email">
         <label for="signature">Signature appended to every comment &amp; PR</label><textarea id="signature"></textarea>
       </div>
+      <p class="muted small">Cursor's CLI reports no turn count or cost, so for Cursor runs only the time limit applies
+        (0 = no limit). Cursor runs get the same signed tools and blocked commands as Claude runs.</p>
       <div class="row" style="margin-top:14px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div>
     </div>
     <div class="card">
@@ -247,7 +281,7 @@
     <div id="log"></div>
     <div id="worker-panel" style="display:none; margin-top:10px">
       <div class="row">
-        <a class="btn primary" id="worker-link" target="_blank" rel="noopener" style="text-decoration:none">Open in Claude</a>
+        <a class="btn primary" id="worker-link" target="_blank" rel="noopener" style="text-decoration:none">Open</a>
         <button class="btn danger" onclick="stopWorker()">Stop worker</button>
         <span class="small muted" id="worker-hint"></span>
       </div>
@@ -259,11 +293,12 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const FIELDS = ["model","effort","poll_interval_seconds","max_concurrent_agents","max_turns_per_run",
+const FIELDS = ["agent_provider","model","effort","cursor_model","poll_interval_seconds","max_concurrent_agents","max_minutes_per_run","max_turns_per_run",
                 "max_budget_usd_per_run","trusted_commenters_only","git_author_name","git_author_email","signature",
                 "github_oauth_client_id","oauth_allowed_users","oauth_allowed_orgs","oauth_allow_repo_collaborators"];
 const SECRETS = ["github_oauth_client_secret"];  // credentials have their own save flow
-const CREDS = ["anthropic_api_key", "github_token"];
+const CREDS = ["anthropic_api_key", "cursor_api_key", "github_token"];
+const APP_NAME = { claude: "Claude", cursor: "Cursor" };
 let state = null, openRunId = null, lastEventId = 0, settingsLoaded = false;
 
 async function api(method, path, body) {
@@ -289,7 +324,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("main section").forEach(s => s.classList.toggle("active", s.id === b.dataset.tab));
   try { localStorage.setItem("bugsbot-tab", b.dataset.tab); } catch {}
   if (b.dataset.tab === "settings") checkCredentials().catch(() => {});
-  if (b.dataset.tab === "workers") checkClaudeAccount().catch(() => {});
+  if (b.dataset.tab === "workers") checkWorkerAccount().catch(() => {});
   refresh();
 });
 try { const t = localStorage.getItem("bugsbot-tab"); if (t) document.querySelector(`[data-tab="${t}"]`)?.click(); } catch {}
@@ -338,8 +373,10 @@ async function refresh() {
   $("runs-table").innerHTML = agentRuns.length ? runTable(agentRuns) : `<div class="empty">No agent runs yet.</div>`;
   $("workers-table").innerHTML = workerRuns.length ? workerTable(workerRuns) : `<div class="empty">No remote workers yet.</div>`;
   const sel = $("worker-repo"), cur = sel.value;
-  sel.innerHTML = `<option value="">(no repository — scratch directory)</option>` + state.repos.map(r => `<option>${esc(r)}</option>`).join("");
-  sel.value = state.repos.includes(cur) ? cur : "";
+  const needsRepo = workerProvider()?.worker_needs_repo;
+  sel.innerHTML = (needsRepo ? "" : `<option value="">(no repository — scratch directory)</option>`) +
+    state.repos.map(r => `<option>${esc(r)}</option>`).join("");
+  sel.value = state.repos.includes(cur) ? cur : (needsRepo ? state.repos[0] || "" : "");
   $("api-token-state").textContent = s.has_api_token ? "active" : "none";
 
   renderRepos();
@@ -350,6 +387,7 @@ async function refresh() {
     settingsLoaded = true;
   }
   $("anthropic_api_key").placeholder = s.has_anthropic_api_key ? "•••••••• (stored)" : "not set — Claude Code login will be used";
+  $("cursor_api_key").placeholder = s.has_cursor_api_key ? "•••••••• (stored)" : "not set";
   $("github_token").placeholder = s.has_github_token ? "•••••••• (stored)" : "not set — gh CLI login will be used";
   if (openRunId) loadRun(openRunId, false);
 }
@@ -369,22 +407,22 @@ function itemTable(items, emptyMsg) {
 }
 
 function runTable(runs) {
-  return `<table><tr><th>Run</th><th>Item</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Turns</th><th>Cost</th></tr>` +
+  return `<table><tr><th>Run</th><th>Item</th><th>Agent</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Turns</th><th>Cost</th></tr>` +
     runs.map(r => `<tr class="click" onclick="openRun(${r.id})">
-      <td>#${r.id}</td><td>${esc(r.repo)}#${r.number} <span class="muted small">${r.kind}</span></td>
+      <td>#${r.id}</td><td>${esc(r.repo)}#${r.number} <span class="muted small">${r.kind}</span></td><td class="small">${esc(APP_NAME[r.provider] || r.provider)}</td>
       <td class="small">${esc(r.trigger)}</td><td>${pill(r.status)}</td>
       <td class="small">${when(r.started_at)}</td><td>${dur(r.duration_seconds)}${r.ended_at ? "" : "…"}</td>
       <td>${r.num_turns ?? "—"}</td><td>${r.cost_usd != null ? "$" + r.cost_usd.toFixed(3) : "—"}</td></tr>`).join("") + `</table>`;
 }
 
 function workerTable(runs) {
-  return `<table><tr><th>Worker</th><th>Name</th><th>Repository</th><th>Status</th><th>Started</th><th>Duration</th><th>Claude app</th></tr>` +
+  return `<table><tr><th>Worker</th><th>Kind</th><th>Name</th><th>Repository</th><th>Status</th><th>Started</th><th>Duration</th><th>Open</th></tr>` +
     runs.map(r => { const live = state?.workers?.[r.id], link = live?.link || (r.summary.startsWith("https://") ? r.summary : "");
       return `<tr class="click" onclick="openRun(${r.id})">
-      <td>#${r.id}</td><td>${esc(live?.name || r.trigger.replace(/^(worker|chat): /, ""))}</td>
+      <td>#${r.id}</td><td class="small">${esc(APP_NAME[r.provider] || r.provider)}</td><td>${esc(live?.name || r.trigger.replace(/^(worker|chat): /, ""))}</td>
       <td>${esc(r.repo) || "<span class=muted>scratch</span>"}</td><td>${pill(r.status)}</td>
       <td class="small">${when(r.started_at)}</td><td>${dur(r.duration_seconds)}${r.ended_at ? "" : "…"}</td>
-      <td>${link && !r.ended_at ? `<a href="${esc(link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in Claude ↗</a>`
+      <td>${link && !r.ended_at ? `<a href="${esc(link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in ${esc(APP_NAME[r.provider] || r.provider)} ↗</a>`
             : r.ended_at ? "—" : `<span class="small muted">starting…</span>`}</td></tr>`; }).join("") + `</table>`;
 }
 
@@ -404,9 +442,13 @@ async function loadRun(id, scroll) {
   $("worker-panel").style.display = live ? "" : "none";
   $("cancel-run").style.visibility = worker ? "hidden" : "";
   if (live) {
+    const app = APP_NAME[live.provider] || live.provider;
     $("worker-link").style.display = live.link ? "" : "none";
+    $("worker-link").textContent = `Open in ${app}`;
     if (live.link) $("worker-link").href = live.link;
-    $("worker-hint").textContent = live.link
+    $("worker-hint").textContent = live.provider === "cursor"
+      ? (live.link ? `Controlled from Cursor (cursor.com/agents), where it's named "${live.name}".` : "Launching…")
+      : live.link
       ? `Controlled from the Claude app, where it's listed in the Code section as "${live.name}".`
       : `Starting… once connected it appears in the Claude app's Code section as "${live.name}" (the log below shows progress).`;
   }
@@ -424,23 +466,45 @@ async function loadRun(id, scroll) {
   if (scroll || atBottom) log.scrollTop = log.scrollHeight;
   if (scroll) $("run-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 }
-async function checkClaudeAccount() {
-  const el = $("claude-account"); el.className = "cred-status none"; el.textContent = "checking…";
-  const a = await api("GET", "/api/workers/account");
+function workerProvider() { return state?.providers?.find(p => p.name === $("worker-provider").value); }
+function showWorkerProvider() {
+  const name = $("worker-provider").value;
+  document.querySelectorAll(".worker-about").forEach(el => el.style.display = el.dataset.provider === name ? "" : "none");
+  document.querySelectorAll(".worker-task").forEach(el => el.style.display = workerProvider()?.worker_needs_task ? "" : "none");
+  $("worker-account-label").textContent = name === "cursor" ? "Cursor API key:" : "Claude account on this host:";
+  $("worker-branch").placeholder = name === "cursor"
+    ? "existing branch, or a new name to create; blank lets Cursor create a cursor/… branch"
+    : "existing branch, or a new name to create; blank lets the agent name one for the task";
+}
+function workerProviderChanged() {
+  showWorkerProvider();
+  try { localStorage.setItem("bugsbot-worker-provider", $("worker-provider").value); } catch {}
+  refresh().then(checkWorkerAccount).catch(() => {});
+}
+async function checkWorkerAccount() {
+  const provider = $("worker-provider").value;
+  const el = $("worker-account"); el.className = "cred-status none"; el.textContent = "checking…";
+  const a = await api("GET", `/api/workers/account?provider=${provider}`);
+  if ($("worker-provider").value !== provider) return;
   const who = [a.email, a.orgName && `(${a.orgName}${a.subscriptionType ? ", " + a.subscriptionType : ""})`].filter(Boolean).join(" ");
   el.className = "cred-status " + (a.ok ? "ok" : "bad");
-  el.textContent = a.ok ? `✓ ${who}` : `✗ ${a.detail}${who ? " — " + who : ""}. Run \`claude\` then /login as the OS user running bugsbot.`;
+  el.textContent = a.ok ? `✓ ${who || a.detail}` : `✗ ${a.detail}${who ? " — " + who : ""}`;
   $("start-worker").disabled = !a.ok;
 }
 async function stopWorker() {
-  if (!openRunId || !confirm("Stop this remote worker? Its Claude app session will disconnect.")) return;
+  const live = state?.workers?.[openRunId];
+  const what = live?.provider === "cursor" ? "Its current run will be stopped and the agent archived in Cursor."
+                                          : "Its Claude app session will disconnect.";
+  if (!openRunId || !confirm(`Stop this remote worker? ${what}`)) return;
   await api("POST", `/api/workers/${openRunId}/stop`); toast("Stopping worker"); refresh();
 }
 async function openWorker() {
-  const { run_id } = await api("POST", "/api/workers", { repo: $("worker-repo").value, branch: $("worker-branch").value, name: $("worker-name").value });
-  $("worker-branch").value = ""; $("worker-name").value = "";
+  const { run_id } = await api("POST", "/api/workers", { provider: $("worker-provider").value, repo: $("worker-repo").value,
+    branch: $("worker-branch").value, name: $("worker-name").value, task: $("worker-task").value });
+  $("worker-branch").value = ""; $("worker-name").value = ""; $("worker-task").value = "";
   toast("Starting remote worker…"); await refresh(); openRun(run_id);
 }
+try { const p = localStorage.getItem("bugsbot-worker-provider"); if (p) $("worker-provider").value = p; } catch {}
 async function newToken() {
   if (!confirm("Generate a new API token? Any existing token stops working.")) return;
   const { token } = await api("POST", "/api/auth/token");
@@ -525,7 +589,7 @@ async function saveSettings() {
 $("repo-input").addEventListener("keydown", e => e.key === "Enter" && addRepo());
 $("label-input").addEventListener("keydown", e => e.key === "Enter" && addLabel());
 
-refresh();
+refresh().then(showWorkerProvider);
 setInterval(() => refresh().catch(() => {}), 4000);
 </script>
 </body>

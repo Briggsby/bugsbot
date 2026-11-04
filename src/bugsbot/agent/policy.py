@@ -1,10 +1,11 @@
-"""What agents may never do, enforced by prompt and by a PreToolUse hook."""
+"""What agents may never do, whichever provider runs them: the rules and the shell-command check.
+
+Each provider enforces `check_command` through its own hook mechanism (see bugsbot.providers).
+"""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
-from typing import Any
 
 # Commands the agent's shell may never run. All GitHub writes go through harness tools.
 FORBIDDEN_COMMANDS = [
@@ -35,17 +36,9 @@ Hard rules:
 """
 
 
-def make_guard(log: Callable[[str, str], None]) -> Callable[..., Awaitable[dict[str, Any]]]:
-    """PreToolUse hook that denies forbidden shell commands."""
-    async def guard(input_data: dict[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
-        command = (input_data.get("tool_input") or {}).get("command", "")
-        for pattern, reason in FORBIDDEN_COMMANDS:
-            if pattern.search(command):
-                log("blocked", f"{reason}\n$ {command}")
-                return {"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": f"bugsbot policy: {reason}",
-                }}
-        return {}
-    return guard
+def check_command(command: str) -> str | None:
+    """The reason `command` is forbidden, or None if the agent may run it."""
+    for pattern, reason in FORBIDDEN_COMMANDS:
+        if pattern.search(command):
+            return reason
+    return None
