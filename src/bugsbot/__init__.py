@@ -32,9 +32,11 @@ def _login_link(home: Path, base: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="bugsbot", description=__doc__)
-    parser.add_argument("command", nargs="?", choices=["serve", "login-link"], default="serve",
+    parser.add_argument("command", nargs="?", choices=["serve", "login-link", "configure"],
+                        default="serve",
                         help="serve (default) runs the harness; login-link prints a single-use sign-in "
-                             "link for an already-running server")
+                             "link for an already-running server; configure applies settings, repos and "
+                             "labels from JSON on stdin (see bugsbot.configure)")
     parser.add_argument("--host", default="127.0.0.1",
                         help="interface to bind (default 127.0.0.1; use 0.0.0.0 to expose publicly)")
     parser.add_argument("--port", type=int, default=8765, help="port for the web UI (default 8765)")
@@ -50,6 +52,16 @@ def main() -> None:
     home = (args.home or default_home()).expanduser().resolve()
     if args.command == "login-link":
         print(_login_link(home, _base_url(args, args.port)))
+        return
+    if args.command == "configure":
+        from bugsbot.configure import ConfigError, apply_json
+        from bugsbot.store import Store
+
+        try:
+            changes = apply_json(Store(home), sys.stdin.read())
+        except ConfigError as e:
+            sys.exit(f"bugsbot configure: {e}")
+        print("\n".join(changes) or "nothing to change")
         return
 
     port = args.port

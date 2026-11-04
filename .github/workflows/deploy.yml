@@ -1,0 +1,149 @@
+name: Deploy
+
+# Deploys main to a Hetzner Cloud server (creating it on the first run). See deploy/README.md.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # Keep the deploy secrets in this environment, restricted to main, so workflows on other
+    # branches (including ones bugsbot's agents push) can't read them.
+    environment: production
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      SERVER_NAME: ${{ vars.HETZNER_SERVER_NAME }}
+      LOCATION: ${{ vars.HETZNER_LOCATION }}
+      SERVER_TYPE: ${{ vars.HETZNER_SERVER_TYPE }}
+    steps:
+      - name: Check configuration
+        id: config
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$HCLOUD_TOKEN" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::notice::HCLOUD_TOKEN and DEPLOY_SSH_KEY aren't set in the production environment; skipping the deploy."
+            echo "enabled=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.enabled == 'true'
+
+      - uses: hetznercloud/setup-hcloud@v1
+        if: steps.config.outputs.enabled == 'true'
+
+      - name: Set up SSH
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" >~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          echo "DEPLOY_SSH_PUBLIC_KEY=$(ssh-keygen -y -f ~/.ssh/id_deploy)" >>"$GITHUB_ENV"
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" >~/.ssh/known_hosts
+            checking=yes
+          else
+            checking=accept-new
+          fi
+          cat >~/.ssh/config <<CFG
+          Host bugsbot
+            User root
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking $checking
+            ConnectTimeout 10
+            ServerAliveInterval 30
+          CFG
+
+      - name: Ensure the Hetzner server exists
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DOMAIN: ${{ vars.BUGSBOT_DOMAIN }}
+        run: |
+          ip=$(deploy/hetzner.sh)
+          printf '  HostName %s\n' "$ip" >>~/.ssh/config
+          # Without a domain, use the free sslip.io name for the IP (203-0-113-7.sslip.io resolves
+          # to 203.0.113.7), so Caddy can still get an HTTPS certificate. "none" = no public URL.
+          case "$DOMAIN" in
+            "") DOMAIN="${ip//./-}.sslip.io" ;;
+            none) DOMAIN="" ;;
+          esac
+          echo "BUGSBOT_DOMAIN=$DOMAIN" >>"$GITHUB_ENV"
+          {
+            echo "### bugsbot"
+            echo "- Server IP: \`$ip\`"
+            if [ -n "$DOMAIN" ]; then
+              echo "- Web UI: https://$DOMAIN/"
+              echo "- GitHub OAuth callback URL: \`https://$DOMAIN/auth/github/callback\`"
+            else
+              echo "- Web UI: SSH tunnel only (\`ssh -L 8765:127.0.0.1:8765 root@$ip\`)"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "Server IP: $ip; web UI: ${DOMAIN:+https://$DOMAIN/}"
+
+      - name: Wait for the server
+        if: steps.config.outputs.enabled == 'true'
+        run: |
+          for i in $(seq 60); do
+            if ssh bugsbot true 2>/dev/null; then break; fi
+            sleep 5
+          done
+          # A new server runs cloud-init (including apt) on first boot; let it finish.
+          ssh bugsbot 'cloud-init status --wait >/dev/null 2>&1 || true'
+
+      - name: Upload bugsbot
+        if: steps.config.outputs.enabled == 'true'
+        run: |
+          git archive --format=tar HEAD | ssh bugsbot '
+            set -e
+            rm -rf /opt/bugsbot/app.new && mkdir -p /opt/bugsbot/app.new
+            tar -x -C /opt/bugsbot/app.new
+            if [ -d /opt/bugsbot/app/.venv ]; then mv /opt/bugsbot/app/.venv /opt/bugsbot/app.new/; fi
+            rm -rf /opt/bugsbot/app && mv /opt/bugsbot/app.new /opt/bugsbot/app'
+
+      - name: Provision
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          BUGSBOT_REPOS: ${{ vars.BUGSBOT_REPOS }}
+          BUGSBOT_LABELS: ${{ vars.BUGSBOT_LABELS }}
+          BUGSBOT_OAUTH_CLIENT_ID: ${{ vars.BUGSBOT_OAUTH_CLIENT_ID }}
+          BUGSBOT_ALLOWED_USERS: ${{ vars.BUGSBOT_ALLOWED_USERS }}
+          BUGSBOT_ALLOWED_ORGS: ${{ vars.BUGSBOT_ALLOWED_ORGS }}
+          BUGSBOT_SETTINGS_JSON: ${{ vars.BUGSBOT_SETTINGS_JSON }}
+          ADMIN_SSH_PUBLIC_KEYS: ${{ vars.ADMIN_SSH_PUBLIC_KEYS }}
+          BUGSBOT_GITHUB_TOKEN: ${{ secrets.BUGSBOT_GITHUB_TOKEN }}
+          BUGSBOT_OAUTH_CLIENT_SECRET: ${{ secrets.BUGSBOT_OAUTH_CLIENT_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Pass the inputs in a root-only file over SSH (not on a command line), which the
+          # server deletes before provisioning.
+          for name in BUGSBOT_DOMAIN BUGSBOT_REPOS BUGSBOT_LABELS BUGSBOT_OAUTH_CLIENT_ID \
+              BUGSBOT_ALLOWED_USERS BUGSBOT_ALLOWED_ORGS BUGSBOT_SETTINGS_JSON ADMIN_SSH_PUBLIC_KEYS \
+              BUGSBOT_GITHUB_TOKEN BUGSBOT_OAUTH_CLIENT_SECRET ANTHROPIC_API_KEY; do
+            printf 'export %s=%q\n' "$name" "${!name}"
+          done | ssh bugsbot 'umask 077 && cat >/root/bugsbot-deploy.env'
+          ssh bugsbot '. /root/bugsbot-deploy.env && rm -f /root/bugsbot-deploy.env && bash /opt/bugsbot/app/deploy/provision.sh'
+
+      - name: Pin the server's host key
+        if: steps.config.outputs.enabled == 'true' && vars.DEPLOY_KNOWN_HOSTS == ''
+        run: |
+          echo "::notice::To pin the server's SSH host key for future deploys, set the DEPLOY_KNOWN_HOSTS variable to the lines below."
+          cat ~/.ssh/known_hosts
